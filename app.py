@@ -470,33 +470,38 @@ def main():
 
     st.divider()
 
-    # ── 파일 업로드 (섹션별로 업로더 + 버튼을 함께 배치 — 버튼을 눌러야 실제 적용됨)
-    # 헤더 행 (섹션 제목)
-    h1, h2, h3 = st.columns(3)
-    h1.markdown("### 📁 미디어 파일")
-    h2.markdown("### 📁 카테고리 파일")
-    h3.markdown("### 🗂️ 인덱스 파일")
+    # ── 파일 업로드 (섹션별로 제목 행 오른쪽에 버튼, 업로더는 그 아래 전체 폭)
+    # 제목 + 버튼 행 — 중첩 컬럼이 아닌 하나의 행(6칸)으로 구성해야 좁은 폭에서도
+    # 같은 줄을 유지하며, vertical_alignment="center"로 제목 텍스트와 버튼을 수직 중앙 정렬한다.
+    ht1, hb1, ht2, hb2, ht3, hb3 = st.columns(
+        [2.3, 0.8, 2.3, 0.8, 2.3, 0.8], vertical_alignment="center"
+    )
+    with ht1:
+        st.markdown("### 📁 미디어 파일")
+    with hb1:
+        run_media = st.button("가공", key='media_btn', type="primary", use_container_width=True)
 
-    # 업로더 + 버튼 행 — 중첩 컬럼이 아닌 하나의 행(9칸)으로 구성해야
-    # 좁은 폭에서 버튼이 아래로 떨어지지 않고 같은 줄에 나란히 붙는다.
-    u1, b1, u2, b2, u3, b3 = st.columns([2.3, 0.8, 2.3, 0.8, 2.3, 0.8])
+    with ht2:
+        st.markdown("### 📁 카테고리 파일")
+    with hb2:
+        run_cat = st.button("가공", key='cat_btn', type="primary", use_container_width=True)
+
+    with ht3:
+        st.markdown("### 🗂️ 인덱스 파일")
+    with hb3:
+        run_index = st.button("업로드", key='index_btn', type="primary", use_container_width=True)
+
+    # 업로더 행 — 버튼과 별도 행이므로 섹션 전체 폭을 그대로 채운다.
+    u1, u2, u3 = st.columns(3)
     with u1:
         media_file = st.file_uploader("미디어 csv 업로드", type=['csv'], key='mf',
                                        label_visibility='collapsed')
-    with b1:
-        run_media = st.button("가공", key='media_btn', type="primary", use_container_width=True)
-
     with u2:
         cat_file = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf',
                                      label_visibility='collapsed')
-    with b2:
-        run_cat = st.button("가공", key='cat_btn', type="primary", use_container_width=True)
-
     with u3:
         index_file = st.file_uploader("인덱스 xlsx 업로드", type=['xlsx', 'xls'], key='ixf',
                                        label_visibility='collapsed')
-    with b3:
-        run_index = st.button("업로드", key='index_btn', type="primary", use_container_width=True)
 
     # 상태 메시지 행
     s1, s2, s3 = st.columns(3)

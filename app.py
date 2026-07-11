@@ -440,6 +440,25 @@ def process_category(raw, group_lookup, creative_lookup):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 화면 표시 전 Arrow 직렬화 안전화
+# ──────────────────────────────────────────────────────────────────────────────
+
+def arrow_safe_preview(df):
+    """st.dataframe()은 내부적으로 PyArrow로 직렬화하는데, object 열 안에 서로 다른
+    파이썬 타입(예: int와 str)이 섞여 있으면 ArrowTypeError로 앱 전체가 죽는다
+    (예: 카테고리 구매 unique 열이 미매칭 행은 원본 숫자값, 매칭된 행은 다른 카테고리
+    그룹 열의 문자열값으로 채워지는 경우). 화면 표시용 복사본에서만 타입이 섞인 열을
+    문자열로 통일한다 — 엑셀 다운로드용 원본 데이터는 그대로 유지되어 영향 없다."""
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == object:
+            types = {type(v) for v in out[col].dropna()}
+            if len(types) > 1:
+                out[col] = out[col].astype(str)
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Row-highlight helper
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -666,7 +685,7 @@ def main():
 
         preview = media_df[id_cols].copy()
 
-        st.dataframe(preview, use_container_width=True, height=320)
+        st.dataframe(arrow_safe_preview(preview), use_container_width=True, height=320)
         st.caption("업로드된 모든 날짜의 데이터가 그대로 가공됩니다 | 전체 열은 다운로드 파일에 포함됩니다.")
 
     # ────────────────────────────── 카테고리 결과 ────────────────────────────
@@ -681,7 +700,7 @@ def main():
             st.success("모든 행이 정상 매핑되었습니다.")
 
         st.dataframe(
-            highlight_rows(cat_df, cat_manual, '#F8D7DA'),
+            highlight_rows(arrow_safe_preview(cat_df), cat_manual, '#F8D7DA'),
             use_container_width=True, height=320
         )
         st.caption("🔴 빨간 행 = 수기 확인 필요  "
@@ -691,7 +710,7 @@ def main():
         if n_m:
             with st.expander(f"🔍 수기 확인 필요 항목 ({n_m}개) 자세히 보기"):
                 manual_rows = cat_df[cat_manual.astype(bool)].copy() if cat_manual is not None else pd.DataFrame()
-                st.dataframe(manual_rows, use_container_width=True)
+                st.dataframe(arrow_safe_preview(manual_rows), use_container_width=True)
 
     # ────────────────────────────── 다운로드 ─────────────────────────────────
     st.divider()

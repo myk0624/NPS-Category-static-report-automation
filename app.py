@@ -447,14 +447,18 @@ def arrow_safe_preview(df):
     """st.dataframe()은 내부적으로 PyArrow로 직렬화하는데, object 열 안에 서로 다른
     파이썬 타입(예: int와 str)이 섞여 있으면 ArrowTypeError로 앱 전체가 죽는다
     (예: 카테고리 구매 unique 열이 미매칭 행은 원본 숫자값, 매칭된 행은 다른 카테고리
-    그룹 열의 문자열값으로 채워지는 경우). 화면 표시용 복사본에서만 타입이 섞인 열을
-    문자열로 통일한다 — 엑셀 다운로드용 원본 데이터는 그대로 유지되어 영향 없다."""
+    그룹 열의 문자열값으로 채워지는 경우).
+
+    이전에는 타입이 섞인 열만 골라 .astype(str)로 변환했는데, .astype(str)은 NaN을
+    문자열 "nan"으로 바꾸지 않고 float NaN 그대로 남겨두는 경우가 있어 — 예를 들어
+    int/str이 섞인 열을 고쳐도 str/float(NaN)이 섞인 채로 남아 ArrowTypeError가
+    똑같이 재발할 수 있다. 그래서 열 종류를 가리지 않고 **모든 열의 모든 값**을
+    결측치는 빈 문자열로, 나머지는 str()로 일괄 변환해 항상 순수 문자열 열이 되도록
+    보장한다. 화면 표시용 복사본에만 적용되며, 엑셀 다운로드용 원본 데이터는
+    그대로 유지되어 영향 없다."""
     out = df.copy()
     for col in out.columns:
-        if out[col].dtype == object:
-            types = {type(v) for v in out[col].dropna()}
-            if len(types) > 1:
-                out[col] = out[col].astype(str)
+        out[col] = out[col].map(lambda v: '' if pd.isna(v) else str(v))
     return out
 
 

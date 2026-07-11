@@ -4,6 +4,7 @@ import numpy as np
 from io import BytesIO
 import traceback
 import csv
+from openpyxl.styles import Font, PatternFill, Border
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -466,18 +467,29 @@ def arrow_safe_preview(df):
 # Excel export builder
 # ──────────────────────────────────────────────────────────────────────────────
 
-def build_excel(media_df, cat_df):
+def _strip_header_style(writer, sheet_name):
+    """헤더(1행) 서식을 일반 텍스트로 초기화 — 색상/볼드 등 어떤 스타일도 없이 출력한다."""
+    ws = writer.sheets[sheet_name]
+    for cell in next(ws.iter_rows(min_row=1, max_row=1)):
+        cell.font = Font()
+        cell.fill = PatternFill()
+        cell.border = Border()
+
+
+def build_media_excel(media_df):
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        if media_df is not None and not media_df.empty:
-            media_df.to_excel(writer, sheet_name='미디어_가공', index=False)
+        media_df.to_excel(writer, sheet_name='미디어_가공', index=False)
+        _strip_header_style(writer, '미디어_가공')
+    buf.seek(0)
+    return buf.getvalue()
 
-        if cat_df is not None and not cat_df.empty:
-            rd_cols = ['Date', 'Media', 'Campaign', 'Ad Group', '사업부구분'] + list(GENERIC_CATEGORY_COLS)
-            rd = cat_df[[c for c in rd_cols if c in cat_df.columns]]
-            rd.to_excel(writer, sheet_name='카테고리_RD붙여넣기', index=False)
-            cat_df.to_excel(writer, sheet_name='카테고리_전체', index=False)
 
+def build_category_excel(cat_df):
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        cat_df.to_excel(writer, sheet_name='카테고리_전체', index=False)
+        _strip_header_style(writer, '카테고리_전체')
     buf.seek(0)
     return buf.getvalue()
 
@@ -692,7 +704,6 @@ def main():
         # 먼저 빈 문자열로 채운 뒤 전체를 문자열로 변환해 완전히 균일한 타입으로 만든다.
         cat_df_display = cat_df.fillna('').astype(str)
         st.dataframe(cat_df_display, use_container_width=True, height=320)
-        st.caption("다운로드 시 카테고리_RD붙여넣기 시트가 RD 시트 BU~BW 붙여넣기용입니다.")
 
         # 수기 확인 필요 행 별도 표시
         if n_m:
@@ -702,31 +713,34 @@ def main():
 
     # ────────────────────────────── 다운로드 ─────────────────────────────────
     st.divider()
-    has_output = (media_df is not None and not media_df.empty) or \
-                 (cat_df   is not None and not cat_df.empty)
+    has_media_output = media_df is not None and not media_df.empty
+    has_cat_output    = cat_df   is not None and not cat_df.empty
 
-    if has_output:
+    if has_media_output or has_cat_output:
         st.subheader("💾 가공 데이터 다운로드")
-        fname       = f"NPS_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        excel_bytes = build_excel(media_df, cat_df)
+        ts = pd.Timestamp.now().strftime('%Y%m%d_%H%M')
 
-        st.download_button(
-            "📥 엑셀 다운로드",
-            data=excel_bytes,
-            file_name=fname,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True,
-        )
-
-        sheets = []
-        if media_df is not None and not media_df.empty:
-            sheets.append("**미디어_가공**: 업로드된 전체 날짜 데이터")
-        if cat_df is not None and not cat_df.empty:
-            sheets.append("**카테고리_RD붙여넣기**: RD 시트 BU~BW 붙여넣기용")
-            sheets.append("**카테고리_전체**: 수기확인 플래그 포함 전체 데이터")
-
-        st.info("시트 구성  |  " + "  |  ".join(sheets))
+        d1, d2 = st.columns(2)
+        with d1:
+            if has_media_output:
+                st.download_button(
+                    "📥 미디어 엑셀 다운로드",
+                    data=build_media_excel(media_df),
+                    file_name=f"미디어_가공_{ts}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                )
+        with d2:
+            if has_cat_output:
+                st.download_button(
+                    "📥 카테고리 엑셀 다운로드",
+                    data=build_category_excel(cat_df),
+                    file_name=f"카테고리_가공_{ts}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                )
     else:
         st.info("가공된 데이터가 없습니다. 파일을 확인 후 다시 시도해주세요.")
 

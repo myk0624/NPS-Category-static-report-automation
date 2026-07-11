@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from io import BytesIO
 import traceback
+import csv
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -73,16 +74,41 @@ def detect_file_kind(df):
     return 'category' if CATEGORY_MARKER in df.columns else 'media'
 
 
+def _sniff_column_names(uploaded_file, encoding):
+    """헤더 행과 첫 데이터 행의 실제 필드 수를 비교해 컬럼명 리스트를 만든다.
+    데이터 행에 트레일링 콤마 등으로 헤더보다 필드가 더 많으면, 그 여분 필드에
+    '_extra_N' 자리표시 이름을 붙여준다 — 이렇게 모든 필드에 명시적 이름을 지정해야
+    pandas가 이름 없는 첫 열을 인덱스로 흡수하는 것을 막고 Date열이 항상 일반 컬럼으로
+    읽히도록 보장할 수 있다."""
+    uploaded_file.seek(0)
+    header_line = uploaded_file.readline().decode(encoding)
+    data_line   = uploaded_file.readline().decode(encoding)
+
+    header_fields = next(csv.reader([header_line])) if header_line else []
+    data_fields   = next(csv.reader([data_line]))   if data_line   else header_fields
+
+    n_extra = max(0, len(data_fields) - len(header_fields))
+    return header_fields + [f'_extra_{i}' for i in range(n_extra)]
+
+
 def read_csv_robust(uploaded_file):
-    """인코딩이 다른 CSV(UTF-8 / CP949 등)를 순차 시도하여 읽는다."""
+    """인코딩이 다른 CSV(UTF-8 / CP949 등)를 순차 시도하여 읽는다.
+    헤더를 직접 읽어 컬럼명으로 명시 지정해서 읽기 때문에, 데이터 행의 필드 수가
+    헤더보다 많은 경우(트레일링 콤마 등)에도 Date 등 첫 열이 인덱스로 잘못 흡수되지
+    않고 항상 일반 컬럼으로 읽힌다."""
     for enc in ('utf-8-sig', 'utf-8', 'cp949'):
         try:
+            names = _sniff_column_names(uploaded_file, enc)
             uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file, header=0, encoding=enc)
+            df = pd.read_csv(uploaded_file, header=0, names=names, encoding=enc)
+            extra_cols = [c for c in df.columns if c.startswith('_extra_')]
+            if extra_cols:
+                df = df.drop(columns=extra_cols)
+            return df
         except (UnicodeDecodeError, UnicodeError):
             continue
     uploaded_file.seek(0)
-    return pd.read_csv(uploaded_file, header=0)  # 마지막 시도, 오류 그대로 노출
+    return pd.read_csv(uploaded_file, header=0, index_col=False)  # 마지막 시도, 오류 그대로 노출
 
 
 # ──────────────────────────────────────────────────────────────────────────────

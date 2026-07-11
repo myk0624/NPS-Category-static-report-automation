@@ -18,6 +18,74 @@ def ci(col: str) -> int:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# CSV 파일 종류 판별 (파일명이 아닌 컬럼 구조 기반)
+# ──────────────────────────────────────────────────────────────────────────────
+
+MEDIA_COLUMNS = [
+    'Date', 'Year', 'Month', 'Week', 'Media', 'Campaign', 'Ad Group', 'ad',
+    'Spend (gross)', 'Impressions', 'Click', 'Video Views', 'Reach',
+    'AF Installs', 'AF Reinstalls', 'AF Revenue', 'AF Order Amount',
+    'AF add_to_cart', 'AF Coupon', 'pb_order_now_delivery_quick',
+    'pb_order_now_delivery_mart', 'pb_order_now_delivery_all',
+    'pb_order_kurlynmart', 'pb_order_kurlynmart(Unique)',
+    'pb_order_kurlynmart_revenue', 'pb_view_product_kurlynmart',
+    'pb_view_product_kurlynmart(Unique)', 'kurly_view_home',
+    'kurly_view_home(Unique)', 'first_order', 'temp_promo1', 'temp_promo2',
+    'temp_event1', 'temp_event1(Unique)', 'OS', 'Campaign Theme',
+    'Campaign Objective', 'Ad Product', 'Campaign Details', 'Targeting',
+    'Gender', 'Age', 'Detailed Targeting', 'Creative Live Date',
+    'Creative Format', 'Creative Type', 'Dimension', 'USP Category',
+    'USP Brand', 'USP', '애드코드', 'Creative Full Name', '대구분',
+    're-engagement', 'gross(net)', 'Campaign Theme(ADEF)',
+    'Campaign Objective(ADEF)', 'Ad Product(ADEF)',
+    'Detailed Targeting(ADEF)', 'USP Category(ADEF)', 'USP Brand(ADEF)',
+    'USP(ADEF)', 'AF Order Count(Adef)', '집약형(Adef)', 'Install(SKAN)',
+    '프로모션', '소재이미지', '소재카피', '소구점',
+]
+
+CATEGORY_EXTRA_COLUMNS = [
+    '카테고리 구매 unique', '카테고리 구매 quantity', '카테고리 구매 price',
+    '패션 unique', '패션 quantity', '패션 price',
+    '뷰티 unique', '뷰티 quantity', '뷰티 price',
+    '디지털가전 unique', '디지털가전 quantity', '디지털가전 price',
+    '가구 unique', '가구 quantity', '가구 price',
+    '키즈 unique', '키즈 quantity', '키즈 price',
+    '식품 unique', '식품 quantity', '식품 price',
+    '스포츠/레저 unique', '스포츠/레저 quantity', '스포츠/레저 price',
+    '생활/건강 unique', '생활/건강 quantity', '생활/건강 price',
+    '여가/생활편의 unique', '여가/생활편의 quantity', '여가/생활편의 price',
+    '리빙 unique', '리빙 quantity', '리빙 price',
+    '자동차/공구 unique', '자동차/공구 quantity', '자동차/공구 price',
+    '펫 unique', '펫 quantity', '펫 price',
+    'e-kam unique', 'e-kam quantity', 'e-kam price',
+    '여가/도서(e쿠폰) unique', '여가/도서(e쿠폰) quantity', '여가/도서(e쿠폰) price',
+    '노크잇 unique', '노크잇 quantity', '노크잇 price',
+]
+
+CATEGORY_COLUMNS  = MEDIA_COLUMNS + CATEGORY_EXTRA_COLUMNS
+CATEGORY_MARKER   = '카테고리 구매 unique'  # 카테고리 파일에만 존재하는 컬럼
+
+
+def detect_file_kind(df):
+    """컬럼 구조로 파일 종류 판별. '카테고리 구매 unique' 컬럼 존재 여부가 기준."""
+    if df is None:
+        return None
+    return 'category' if CATEGORY_MARKER in df.columns else 'media'
+
+
+def read_csv_robust(uploaded_file):
+    """인코딩이 다른 CSV(UTF-8 / CP949 등)를 순차 시도하여 읽는다."""
+    for enc in ('utf-8-sig', 'utf-8', 'cp949'):
+        try:
+            uploaded_file.seek(0)
+            return pd.read_csv(uploaded_file, header=0, encoding=enc)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    uploaded_file.seek(0)
+    return pd.read_csv(uploaded_file, header=0)  # 마지막 시도, 오류 그대로 노출
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Column-index constants
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -269,7 +337,7 @@ def build_excel(media_df, cat_df, end_df):
 def main():
     st.set_page_config(page_title="NPS Report 가공기", layout="wide", page_icon="📊")
     st.title("📊 NPS Report 데이터 가공기")
-    st.caption("미디어·카테고리 엑셀 로우 데이터를 업로드하면 RD 시트 형식으로 자동 가공합니다.")
+    st.caption("미디어·카테고리 CSV 로우 데이터를 업로드하면 RD 시트 형식으로 자동 가공합니다.")
 
     # ── 날짜 설정
     with st.expander("⚙️ 기준 날짜 설정 (기본: 자동 전일자)", expanded=False):
@@ -290,15 +358,16 @@ def main():
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown("### 📁 미디어 파일")
-        media_file = st.file_uploader("미디어 xlsx 업로드", type=['xlsx', 'xls'], key='mf')
+        media_file = st.file_uploader("미디어 csv 업로드", type=['csv'], key='mf')
         if media_file:
             st.success(f"✅ {media_file.name}")
 
     with c2:
         st.markdown("### 📁 카테고리 파일")
-        cat_file = st.file_uploader("카테고리 xlsx 업로드", type=['xlsx', 'xls'], key='cf')
+        cat_file = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf')
         if cat_file:
             st.success(f"✅ {cat_file.name}")
+    st.caption("파일명과 무관하게 컬럼 구조를 읽어 미디어/카테고리 파일을 자동으로 판별·교정합니다.")
 
     with c3:
         st.markdown("### 📅 캠페인 종료일 (선택)")
@@ -322,15 +391,38 @@ def main():
     # ── 파일 읽기
     with st.spinner("파일 읽는 중..."):
         try:
-            media_raw = pd.read_excel(media_file, header=0, engine='openpyxl') \
-                if media_file else None
-            cat_raw   = pd.read_excel(cat_file,   header=0, engine='openpyxl') \
-                if cat_file   else None
-            end_df    = pd.read_excel(end_file,   header=0, engine='openpyxl') \
+            media_raw = read_csv_robust(media_file) if media_file else None
+            cat_raw   = read_csv_robust(cat_file)   if cat_file   else None
+            end_df    = pd.read_excel(end_file, header=0, engine='openpyxl') \
                 if end_file   else None
         except Exception as e:
             st.error(f"파일 읽기 오류: {e}")
             return
+
+    # ── 컬럼 구조 기반 파일 종류 자동 판별/교정
+    # (파일명이 아닌 '카테고리 구매 unique' 컬럼 존재 여부로 판단)
+    media_kind = detect_file_kind(media_raw)
+    cat_kind   = detect_file_kind(cat_raw)
+
+    if media_kind == 'category' and cat_kind == 'media':
+        st.warning("⚠️ 업로드 위치가 바뀐 것을 감지하여 자동으로 교정했습니다: "
+                   f"'{media_file.name}' → 카테고리 파일, '{cat_file.name}' → 미디어 파일")
+        media_raw, cat_raw = cat_raw, media_raw
+    elif media_kind == 'category' and cat_raw is None:
+        st.warning(f"⚠️ '{media_file.name}'은(는) 카테고리 파일 컬럼 구조로 감지되어 "
+                   "카테고리 파일로 처리합니다.")
+        cat_raw, media_raw = media_raw, None
+    elif cat_kind == 'media' and media_raw is None:
+        st.warning(f"⚠️ '{cat_file.name}'은(는) 미디어 파일 컬럼 구조로 감지되어 "
+                   "미디어 파일로 처리합니다.")
+        media_raw, cat_raw = cat_raw, None
+
+    if media_raw is not None and media_raw.shape[1] not in (len(MEDIA_COLUMNS),):
+        st.info(f"ℹ️ 미디어 파일 컬럼 수({media_raw.shape[1]})가 예상({len(MEDIA_COLUMNS)}개)과 "
+                "다릅니다. 컬럼 구조를 확인해주세요.")
+    if cat_raw is not None and cat_raw.shape[1] not in (len(CATEGORY_COLUMNS),):
+        st.info(f"ℹ️ 카테고리 파일 컬럼 수({cat_raw.shape[1]})가 예상({len(CATEGORY_COLUMNS)}개)과 "
+                "다릅니다. 컬럼 구조를 확인해주세요.")
 
     # ── 가공
     media_df = media_d4_7 = cat_df = cat_manual = None

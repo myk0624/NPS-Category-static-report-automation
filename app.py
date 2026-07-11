@@ -170,7 +170,7 @@ def build_index_lookup(group_df):
 
     g = group_df.copy()
     if end_col:
-        g[end_col] = pd.to_datetime(g[end_col], errors='coerce')
+        g[end_col] = parse_flexible_dates(g[end_col])
 
     for _, row in g.iterrows():
         key = (str(row['Campaign']).strip(), str(row['Ad Group']).strip())
@@ -193,7 +193,7 @@ def build_creative_lookup(creative_df):
 
     g = creative_df.copy()
     if end_col:
-        g[end_col] = pd.to_datetime(g[end_col], errors='coerce')
+        g[end_col] = parse_flexible_dates(g[end_col])
 
     for _, row in g.iterrows():
         key = (str(row['Campaign']).strip(), str(row['Ad Group']).strip(), str(row['Ad']).strip())
@@ -216,7 +216,7 @@ def add_index_columns(df, group_lookup, creative_lookup, camp_col, adg_col, ad_c
     - 그룹·소재 둘 다 미매칭 → 소재_D7초과여부도 '#인덱스추가'
     """
     out   = df.copy()
-    dates = pd.to_datetime(out[date_col], errors='coerce')
+    dates = parse_flexible_dates(out[date_col])
 
     biz_list, group_status, creative_status = [], [], []
     for camp, adg, ad, d in zip(out[camp_col], out[adg_col], out[ad_col], dates):
@@ -257,6 +257,31 @@ def row_val(row, idx, default=np.nan):
     return row.iloc[idx] if idx < len(row) else default
 
 
+DATE_FALLBACK_FORMATS = ('%Y%m%d', '%Y/%m/%d', '%Y.%m.%d', '%Y-%m-%d')
+
+
+def parse_flexible_dates(series):
+    """열에 섞여 있는 여러 날짜 형식(2026-07-03, 20260703, 2026/07/03 등)을 최대한 인식한다.
+    pandas.to_datetime은 한 열에 형식이 섞여 있으면 처음 인식한 형식만 유지하고 나머지를
+    NaT로 만들어버리는 경우가 있어(형식별로는 개별적으로 모두 정상 파싱됨), 1차 파싱 후
+    남은 값에 대해 형식을 하나씩 지정해 재시도한다."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+
+    s = series.astype(str).str.strip()
+    parsed  = pd.to_datetime(s, errors='coerce')
+    missing = parsed.isna() & series.notna()
+
+    for fmt in DATE_FALLBACK_FORMATS:
+        if not missing.any():
+            break
+        attempt = pd.to_datetime(s[missing], format=fmt, errors='coerce')
+        parsed.loc[missing] = attempt
+        missing = parsed.isna() & series.notna()
+
+    return parsed
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Media processing
 # ──────────────────────────────────────────────────────────────────────────────
@@ -275,7 +300,7 @@ def process_media(raw, yesterday):
     df = raw.copy()
     date_col = df.columns[M_DATE]
 
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    df[date_col] = parse_flexible_dates(df[date_col])
     n_before = len(df)
     df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
 
@@ -331,7 +356,7 @@ def process_category(raw, yesterday, group_lookup, creative_lookup):
         st.error("카테고리 파일: A열(날짜)를 찾을 수 없습니다.")
         return pd.DataFrame(), np.array([], dtype=bool)
 
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    df[date_col] = parse_flexible_dates(df[date_col])
     df = df.dropna(subset=[date_col])
     df = df[df[date_col].dt.normalize() == yesterday].copy().reset_index(drop=True)
 

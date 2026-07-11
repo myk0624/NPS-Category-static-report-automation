@@ -471,39 +471,42 @@ def main():
     st.divider()
 
     # ── 파일 업로드 (섹션별로 업로더 + 버튼을 함께 배치 — 버튼을 눌러야 실제 적용됨)
-    c1, c2, c3 = st.columns(3)
+    # 헤더 행 (섹션 제목)
+    h1, h2, h3 = st.columns(3)
+    h1.markdown("### 📁 미디어 파일")
+    h2.markdown("### 📁 카테고리 파일")
+    h3.markdown("### 🗂️ 인덱스 파일")
 
-    with c1:
-        st.markdown("### 📁 미디어 파일")
-        u1, b1 = st.columns([3, 1])
-        with u1:
-            media_file = st.file_uploader("미디어 csv 업로드", type=['csv'], key='mf')
-        with b1:
-            st.markdown("<br>", unsafe_allow_html=True)
-            run_media = st.button("가공", key='media_btn', type="primary", use_container_width=True)
+    # 업로더 + 버튼 행 — 중첩 컬럼이 아닌 하나의 행(9칸)으로 구성해야
+    # 좁은 폭에서 버튼이 아래로 떨어지지 않고 같은 줄에 나란히 붙는다.
+    u1, b1, u2, b2, u3, b3 = st.columns([2.3, 0.8, 2.3, 0.8, 2.3, 0.8])
+    with u1:
+        media_file = st.file_uploader("미디어 csv 업로드", type=['csv'], key='mf',
+                                       label_visibility='collapsed')
+    with b1:
+        run_media = st.button("가공", key='media_btn', type="primary", use_container_width=True)
+
+    with u2:
+        cat_file = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf',
+                                     label_visibility='collapsed')
+    with b2:
+        run_cat = st.button("가공", key='cat_btn', type="primary", use_container_width=True)
+
+    with u3:
+        index_file = st.file_uploader("인덱스 xlsx 업로드", type=['xlsx', 'xls'], key='ixf',
+                                       label_visibility='collapsed')
+    with b3:
+        run_index = st.button("업로드", key='index_btn', type="primary", use_container_width=True)
+
+    # 상태 메시지 행
+    s1, s2, s3 = st.columns(3)
+    with s1:
         if media_file:
             st.success(f"✅ {media_file.name}")
-
-    with c2:
-        st.markdown("### 📁 카테고리 파일")
-        u2, b2 = st.columns([3, 1])
-        with u2:
-            cat_file = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf')
-        with b2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            run_cat = st.button("가공", key='cat_btn', type="primary", use_container_width=True)
+    with s2:
         if cat_file:
             st.success(f"✅ {cat_file.name}")
-
-    with c3:
-        st.markdown("### 🗂️ 인덱스 파일")
-        u3, b3 = st.columns([3, 1])
-        with u3:
-            index_file = st.file_uploader("인덱스 xlsx 업로드", type=['xlsx', 'xls'], key='ixf')
-        with b3:
-            st.markdown("<br>", unsafe_allow_html=True)
-            run_index = st.button("업로드", key='index_btn', type="primary", use_container_width=True)
-
+    with s3:
         if run_index:
             if not index_file:
                 st.warning("인덱스 파일을 먼저 선택해주세요.")

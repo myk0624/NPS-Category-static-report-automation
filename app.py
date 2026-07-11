@@ -90,12 +90,12 @@ def read_csv_robust(uploaded_file):
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Media file
-M_DATE,  M_CAMP,  M_ADG  = ci('A'), ci('F'), ci('G')
+M_DATE,  M_CAMP,  M_ADG, M_AD = ci('A'), ci('F'), ci('G'), ci('H')
 M_NUM_ST, M_BL            = ci('I'), ci('BL')   # numeric block: I(8)..BL(63)
 M_BL_NAME = MEDIA_COLUMNS[M_BL]                 # '집약형(Adef)' — 열 삽입 후에도 이름으로 참조
 
 # Category file
-C_DATE, C_MEDIA, C_CAMP, C_ADG = ci('A'), ci('E'), ci('F'), ci('G')
+C_DATE, C_MEDIA, C_CAMP, C_ADG, C_AD = ci('A'), ci('E'), ci('F'), ci('G'), ci('H')
 C_AV = ci('AV')                  # 47 – USP Category (사업부-연합 세부 분기용, 원본 그대로 유효)
 
 # 사업부구분(인덱스 그룹 시트 기준) → 카테고리 그룹명. 그룹명 + ' unique'/' quantity'/' price'로
@@ -154,6 +154,9 @@ def parse_index_file(uploaded_file):
     return group_df, creative_df
 
 
+INDEX_MISSING_MARK = '#인덱스추가'  # 인덱스에 없는 Campaign+Ad Group(+Ad) 표시값
+
+
 def build_index_lookup(group_df):
     """그룹 시트 → {(Campaign, Ad Group): (사업부구분, 종료일 Timestamp)} 매핑."""
     lookup = {}
@@ -178,28 +181,67 @@ def build_index_lookup(group_df):
     return lookup
 
 
-def add_index_columns(df, lookup, camp_col, adg_col, date_col):
-    """인덱스 매칭 결과를 맨 앞 두 열('사업부구분(인덱스)', 'D7_상태')로 추가.
-    Campaign + Ad Group 매칭. 행 삭제는 하지 않고 상태만 표시(포함/제외)."""
+def build_creative_lookup(creative_df):
+    """소재 시트 → {(Campaign, Ad Group, Ad): 종료일 Timestamp} 매핑."""
+    lookup = {}
+    if creative_df is None or creative_df.empty:
+        return lookup
+    if any(c not in creative_df.columns for c in ('Campaign', 'Ad Group', 'Ad')):
+        return lookup
+
+    end_col = '종료일' if '종료일' in creative_df.columns else None
+
+    g = creative_df.copy()
+    if end_col:
+        g[end_col] = pd.to_datetime(g[end_col], errors='coerce')
+
+    for _, row in g.iterrows():
+        key = (str(row['Campaign']).strip(), str(row['Ad Group']).strip(), str(row['Ad']).strip())
+        lookup[key] = row[end_col] if end_col else pd.NaT
+    return lookup
+
+
+def d7_status(row_date, end_date):
+    """종료일+7일 기준 포함/제외 판정. 종료일을 알 수 없으면 기본값 '포함'."""
+    if pd.isna(end_date) or pd.isna(row_date):
+        return '포함'
+    return '포함' if row_date <= end_date + pd.Timedelta(days=7) else '제외'
+
+
+def add_index_columns(df, group_lookup, creative_lookup, camp_col, adg_col, ad_col, date_col):
+    """그룹/소재 인덱스 매칭 결과를 맨 앞 3열('사업부구분', '그룹_D7초과여부', '소재_D7초과여부')로 추가.
+    그룹은 Campaign+Ad Group, 소재는 Campaign+Ad Group+Ad로 매칭한다. 행 삭제는 하지 않는다.
+    - 그룹 미매칭 → 사업부구분/그룹_D7초과여부 모두 '#인덱스추가'
+    - 소재 미매칭이지만 그룹은 매칭 → 소재_D7초과여부 = '그룹기준적용'
+    - 그룹·소재 둘 다 미매칭 → 소재_D7초과여부도 '#인덱스추가'
+    """
     out   = df.copy()
     dates = pd.to_datetime(out[date_col], errors='coerce')
 
-    biz_list, status_list = [], []
-    for camp, adg, d in zip(out[camp_col], out[adg_col], dates):
-        match = lookup.get((str(camp).strip(), str(adg).strip()))
-        if match is None:
-            biz_list.append(np.nan)
-            status_list.append('포함')
-            continue
-        biz, end_date = match
-        biz_list.append(biz)
-        if pd.isna(end_date) or pd.isna(d):
-            status_list.append('포함')
-        else:
-            status_list.append('포함' if d <= end_date + pd.Timedelta(days=7) else '제외')
+    biz_list, group_status, creative_status = [], [], []
+    for camp, adg, ad, d in zip(out[camp_col], out[adg_col], out[ad_col], dates):
+        camp_s, adg_s, ad_s = str(camp).strip(), str(adg).strip(), str(ad).strip()
 
-    out.insert(0, 'D7_상태', status_list)
-    out.insert(0, '사업부구분(인덱스)', biz_list)
+        gmatch = group_lookup.get((camp_s, adg_s))
+        if gmatch is None:
+            biz_list.append(INDEX_MISSING_MARK)
+            group_status.append(INDEX_MISSING_MARK)
+        else:
+            biz_val, g_end = gmatch
+            biz_list.append(biz_val if pd.notna(biz_val) else INDEX_MISSING_MARK)
+            group_status.append(d7_status(d, g_end))
+
+        c_end = creative_lookup.get((camp_s, adg_s, ad_s))
+        if c_end is not None:
+            creative_status.append(d7_status(d, c_end))
+        elif gmatch is not None:
+            creative_status.append('그룹기준적용')
+        else:
+            creative_status.append(INDEX_MISSING_MARK)
+
+    out.insert(0, '소재_D7초과여부', creative_status)
+    out.insert(0, '그룹_D7초과여부', group_status)
+    out.insert(0, '사업부구분', biz_list)
     return out
 
 
@@ -256,15 +298,16 @@ def process_media(raw, yesterday):
 # Category processing
 # ──────────────────────────────────────────────────────────────────────────────
 
-def process_category(raw, yesterday, lookup):
+def process_category(raw, yesterday, group_lookup, creative_lookup):
     """
     Returns (result_df, needs_manual_bool_array).
-    result_df columns: 사업부구분(인덱스), D7_상태, 날짜, Media, Campaign, Ad Group,
-                       USP_Category, 카테고리_unique, 카테고리_qty, 카테고리_price, 수기확인필요
+    result_df columns: 사업부구분, 그룹_D7초과여부, 소재_D7초과여부, 날짜, Media, Campaign,
+                       Ad Group, USP_Category, 카테고리_unique, 카테고리_qty, 카테고리_price, 수기확인필요
 
     사업부구분은 카테고리 파일 자체에는 없고(BR열은 '카테고리 구매 unique' 수치 데이터)
     인덱스 그룹 시트(Campaign+Ad Group 매칭)에서만 가져온다. 이 값으로 카테고리_unique/qty/price를
-    어느 카테고리 그룹 열(이름 기준)에서 가져올지 결정한다.
+    어느 카테고리 그룹 열(이름 기준)에서 가져올지 결정한다. 매칭되지 않는 행도 삭제하지 않고
+    그대로 유지하며 '#인덱스추가'로 표시한다.
     """
     df = raw.copy()
     date_col = safe_col(df, C_DATE)
@@ -280,30 +323,39 @@ def process_category(raw, yesterday, lookup):
         st.warning(f"카테고리 파일: 전일자({yesterday.date()}) 데이터가 없습니다.")
         return pd.DataFrame(), np.array([], dtype=bool)
 
-    camp_col = safe_col(df, C_CAMP)
-    adg_col  = safe_col(df, C_ADG)
-
-    n        = len(df)
-    out_u    = np.full(n, np.nan, object)
-    out_q    = np.full(n, np.nan, object)
-    out_p    = np.full(n, np.nan, object)
-    manual   = np.zeros(n, bool)
-    biz_list = np.full(n, np.nan, object)
-    d7_list  = ['포함'] * n
+    n            = len(df)
+    out_u        = np.full(n, np.nan, object)
+    out_q        = np.full(n, np.nan, object)
+    out_p        = np.full(n, np.nan, object)
+    manual       = np.zeros(n, bool)
+    biz_list     = np.full(n, '', object)
+    group_status = np.full(n, '', object)
+    creative_status = np.full(n, '', object)
 
     for pos, (_, row) in enumerate(df.iterrows()):
-        camp = str(row_val(row, C_CAMP, '')).strip() if camp_col else ''
-        adg  = str(row_val(row, C_ADG, '')).strip()  if adg_col  else ''
-        match = lookup.get((camp, adg))
-
-        biz      = match[0] if match else np.nan
-        end_date = match[1] if match else pd.NaT
-        biz_list[pos] = biz
-        biz_str  = str(biz).strip() if pd.notna(biz) else ''
-
+        camp     = str(row_val(row, C_CAMP, '')).strip()
+        adg      = str(row_val(row, C_ADG, '')).strip()
+        ad       = str(row_val(row, C_AD, '')).strip()
         row_date = row_val(row, C_DATE)
-        if pd.notna(end_date) and pd.notna(row_date) and row_date > end_date + pd.Timedelta(days=7):
-            d7_list[pos] = '제외'
+
+        gmatch = group_lookup.get((camp, adg))
+        if gmatch is None:
+            biz_list[pos]     = INDEX_MISSING_MARK
+            group_status[pos] = INDEX_MISSING_MARK
+            biz_str = ''
+        else:
+            biz_val, g_end = gmatch
+            biz_list[pos]     = biz_val if pd.notna(biz_val) else INDEX_MISSING_MARK
+            group_status[pos] = d7_status(row_date, g_end)
+            biz_str = str(biz_val).strip() if pd.notna(biz_val) else ''
+
+        c_end = creative_lookup.get((camp, adg, ad))
+        if c_end is not None:
+            creative_status[pos] = d7_status(row_date, c_end)
+        elif gmatch is not None:
+            creative_status[pos] = '그룹기준적용'
+        else:
+            creative_status[pos] = INDEX_MISSING_MARK
 
         group_name = None
         if biz_str == '사업부-연합':
@@ -324,8 +376,9 @@ def process_category(raw, yesterday, lookup):
         out_p[pos] = row[p_name] if p_name in df.columns else np.nan
 
     result = pd.DataFrame({
-        '사업부구분(인덱스)': biz_list,
-        'D7_상태':           d7_list,
+        '사업부구분':        biz_list,
+        '그룹_D7초과여부':   group_status,
+        '소재_D7초과여부':   creative_status,
         '날짜':             df.iloc[:, C_DATE].dt.date      if C_DATE  < df.shape[1] else '',
         'Media':            df.iloc[:, C_MEDIA]             if C_MEDIA < df.shape[1] else '',
         'Campaign':         df.iloc[:, C_CAMP]              if C_CAMP  < df.shape[1] else '',
@@ -386,7 +439,6 @@ def _init_session_state():
         'index_creative_df':  None,
         'index_filename':     None,
         'index_uploaded_at':  None,
-        'index_sig':          None,
         'media_df':           None,
         'media_d4_7':         None,
         'cat_df':             None,
@@ -418,27 +470,44 @@ def main():
 
     st.divider()
 
-    # ── 파일 업로드
+    # ── 파일 업로드 (섹션별로 업로더 + 버튼을 함께 배치 — 버튼을 눌러야 실제 적용됨)
     c1, c2, c3 = st.columns(3)
+
     with c1:
         st.markdown("### 📁 미디어 파일")
-        media_file = st.file_uploader("미디어 csv 업로드", type=['csv'], key='mf')
+        u1, b1 = st.columns([3, 1])
+        with u1:
+            media_file = st.file_uploader("미디어 csv 업로드", type=['csv'], key='mf')
+        with b1:
+            st.markdown("<br>", unsafe_allow_html=True)
+            run_media = st.button("가공", key='media_btn', type="primary", use_container_width=True)
         if media_file:
             st.success(f"✅ {media_file.name}")
 
     with c2:
         st.markdown("### 📁 카테고리 파일")
-        cat_file = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf')
+        u2, b2 = st.columns([3, 1])
+        with u2:
+            cat_file = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf')
+        with b2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            run_cat = st.button("가공", key='cat_btn', type="primary", use_container_width=True)
         if cat_file:
             st.success(f"✅ {cat_file.name}")
 
     with c3:
         st.markdown("### 🗂️ 인덱스 파일")
-        index_file = st.file_uploader("인덱스 xlsx 업로드", type=['xlsx', 'xls'], key='ixf')
+        u3, b3 = st.columns([3, 1])
+        with u3:
+            index_file = st.file_uploader("인덱스 xlsx 업로드", type=['xlsx', 'xls'], key='ixf')
+        with b3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            run_index = st.button("업로드", key='index_btn', type="primary", use_container_width=True)
 
-        if index_file is not None:
-            sig = (index_file.name, index_file.size)
-            if st.session_state['index_sig'] != sig:
+        if run_index:
+            if not index_file:
+                st.warning("인덱스 파일을 먼저 선택해주세요.")
+            else:
                 try:
                     group_df, creative_df = parse_index_file(index_file)
                     missing = [c for c in INDEX_GROUP_COLUMNS if c not in group_df.columns]
@@ -449,7 +518,6 @@ def main():
                         st.session_state['index_creative_df'] = creative_df
                         st.session_state['index_filename']    = index_file.name
                         st.session_state['index_uploaded_at'] = pd.Timestamp.now()
-                        st.session_state['index_sig']         = sig
                 except Exception as e:
                     st.error(f"인덱스 파일 읽기 오류: {e}")
 
@@ -462,22 +530,15 @@ def main():
                 if st.session_state['index_creative_df'] is not None else 0
             st.caption(f"그룹 시트 {g_n}건 · 소재 시트 {c_n}건")
         else:
-            st.info("적용된 인덱스가 없습니다. 업로드하면 자동 저장됩니다.")
+            st.info("적용된 인덱스가 없습니다. 파일 선택 후 업로드 버튼을 눌러주세요.")
 
         st.caption("그룹 시트: 사업부구분 · Media · Campaign · Ad Group · 종료일\n\n"
                    "업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
 
     st.divider()
 
-    # ── 개별 가공 버튼
-    b1, b2 = st.columns(2)
-    with b1:
-        run_media = st.button("📊 미디어 파일 가공", type="primary", use_container_width=True)
-    with b2:
-        run_cat = st.button("🛒 카테고리 파일 가공", type="primary", use_container_width=True)
-
-    group_df = st.session_state['index_group_df']
-    lookup   = build_index_lookup(group_df)
+    group_lookup    = build_index_lookup(st.session_state['index_group_df'])
+    creative_lookup = build_creative_lookup(st.session_state['index_creative_df'])
 
     # ────────────────────────────── 미디어 가공 ──────────────────────────────
     if run_media:
@@ -505,11 +566,11 @@ def main():
                                 date_col = m_df.columns[M_DATE]
                                 camp_col = m_df.columns[M_CAMP]
                                 adg_col  = m_df.columns[M_ADG]
-                                if lookup:
-                                    m_df = add_index_columns(m_df, lookup, camp_col, adg_col, date_col)
-                                else:
-                                    st.info("ℹ️ 적용된 인덱스가 없어 사업부구분(인덱스)/D7_상태 열은 "
-                                            "추가되지 않았습니다.")
+                                ad_col   = m_df.columns[M_AD]
+                                m_df = add_index_columns(
+                                    m_df, group_lookup, creative_lookup,
+                                    camp_col, adg_col, ad_col, date_col
+                                )
                                 st.session_state['media_df']   = m_df
                                 st.session_state['media_d4_7'] = m_d47
                         except Exception:
@@ -534,13 +595,13 @@ def main():
                     if cat_raw.shape[1] != len(CATEGORY_COLUMNS):
                         st.info(f"ℹ️ 카테고리 파일 컬럼 수({cat_raw.shape[1]})가 예상"
                                 f"({len(CATEGORY_COLUMNS)}개)과 다릅니다. 컬럼 구조를 확인해주세요.")
-                    if not lookup:
+                    if not group_lookup:
                         st.warning("⚠️ 적용된 인덱스가 없어 사업부구분을 판별할 수 없습니다. "
-                                   "카테고리_unique/qty/price가 모두 '카테고리 구매' 총계로 대체되고 "
-                                   "전체 행이 수기 확인 대상으로 표시됩니다. 인덱스 파일을 먼저 업로드해주세요.")
+                                   "전체 행이 '#인덱스추가'로 표시되고 카테고리_unique/qty/price는 "
+                                   "'카테고리 구매' 총계로 대체됩니다. 인덱스 파일을 먼저 업로드해주세요.")
                     with st.spinner("카테고리 데이터 가공 중..."):
                         try:
-                            c_df, c_manual = process_category(cat_raw, yesterday, lookup)
+                            c_df, c_manual = process_category(cat_raw, yesterday, group_lookup, creative_lookup)
                             st.session_state['cat_df']     = c_df
                             st.session_state['cat_manual'] = c_manual
                         except Exception:
@@ -548,7 +609,7 @@ def main():
 
     if not run_media and not run_cat and st.session_state['media_df'] is None \
             and st.session_state['cat_df'] is None:
-        st.info("파일을 업로드한 후 원하는 가공 버튼을 눌러주세요.")
+        st.info("파일을 업로드한 후 각 섹션의 버튼을 눌러주세요.")
 
     media_df   = st.session_state['media_df']
     media_d4_7 = st.session_state['media_d4_7']
@@ -568,7 +629,7 @@ def main():
         m3.metric("4~7일치 (BL열만 유효)", n_d4_7)
 
         # 미리보기: 인덱스 열 + 식별자 열(Date~ad) + 집약형(Adef)열
-        id_cols = [c for c in ['사업부구분(인덱스)', 'D7_상태'] if c in media_df.columns]
+        id_cols = [c for c in ['사업부구분', '그룹_D7초과여부', '소재_D7초과여부'] if c in media_df.columns]
         id_cols += [c for c in MEDIA_COLUMNS[:8] if c in media_df.columns]
         if M_BL_NAME in media_df.columns and M_BL_NAME not in id_cols:
             id_cols.append(M_BL_NAME)
@@ -590,7 +651,7 @@ def main():
         n_m = int(cat_manual.sum()) if cat_manual is not None else 0
         if n_m:
             st.warning(f"⚠️ 수기 확인 필요: **{n_m}개 행** — "
-                       "사업부구분 미매핑 또는 사업부-연합의 USP Category 미매핑")
+                       "인덱스 미매칭(#인덱스추가) 또는 사업부-연합의 USP Category 미매핑")
         else:
             st.success("모든 행이 정상 매핑되었습니다.")
 

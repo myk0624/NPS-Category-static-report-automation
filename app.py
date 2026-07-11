@@ -276,13 +276,24 @@ def process_media(raw, yesterday):
     date_col = df.columns[M_DATE]
 
     df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    n_before = len(df)
     df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+
+    if df.empty:
+        st.warning(f"⚠️ 미디어 파일: A열(날짜)을 인식할 수 있는 행이 없습니다. "
+                    f"날짜 형식을 확인해주세요. (원본 {n_before}행 중 0행 인식)")
+        return df, np.array([], dtype=bool)
 
     d7_start = yesterday - pd.Timedelta(days=6)
     d3_start = yesterday - pd.Timedelta(days=2)  # 3일치 중 가장 오래된 날
 
     df = df[(df[date_col] >= d7_start) & (df[date_col] <= yesterday)].copy()
     df = df.reset_index(drop=True)
+
+    if df.empty:
+        st.warning(f"⚠️ 미디어 파일: 최근 7일({d7_start.date()} ~ {yesterday.date()}) 범위에 "
+                    "해당하는 데이터가 없습니다. '기준 날짜 설정'에서 날짜를 확인해주세요.")
+        return df, np.array([], dtype=bool)
 
     is_d4_7 = (df[date_col] < d3_start).values  # bool array aligned with df
 

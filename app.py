@@ -287,8 +287,13 @@ def process_media(raw, yesterday):
     is_d4_7 = (df[date_col] < d3_start).values  # bool array aligned with df
 
     # Zero out I(8)..BK(62) for day-4-to-7 rows; BL(63) kept
+    # 열을 object dtype으로 바꾼 뒤 대입 — pandas 3.x는 문자열 열을 기본적으로
+    # string[pyarrow]로 읽어들이는데, 여기에 int 0을 바로 대입하면 TypeError가 발생한다
+    # (I~BK 범위에는 숫자 지표 외에 OS/Gender/Age/소재 관련 텍스트 열도 섞여 있음).
     for col_i in range(M_NUM_ST, M_BL):
         if col_i < df.shape[1]:
+            col_name = df.columns[col_i]
+            df[col_name] = df[col_name].astype(object)
             df.iloc[is_d4_7, col_i] = 0
 
     return df, is_d4_7

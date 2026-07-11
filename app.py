@@ -233,7 +233,8 @@ def d7_status(row_date, end_date):
 
 
 def add_index_columns(df, group_lookup, creative_lookup, camp_col, adg_col, ad_col, date_col):
-    """그룹/소재 인덱스 매칭 결과를 맨 앞 3열('사업부구분', '그룹_D7초과여부', '소재_D7초과여부')로 추가.
+    """그룹/소재 인덱스 매칭 결과를 추가한다 — 맨 앞 2열 '그룹_D7초과여부'/'소재_D7초과여부',
+    맨 끝 1열 '사업부구분'. 원본 데이터 열 순서는 그대로 유지된다.
     그룹은 Campaign+Ad Group, 소재는 Campaign+Ad Group+Ad로 매칭한다. 행 삭제는 하지 않는다.
     - 그룹 미매칭 → 사업부구분/그룹_D7초과여부 모두 '#인덱스추가'
     - 소재 미매칭이지만 그룹은 매칭 → 소재_D7초과여부 = '그룹기준적용'
@@ -265,7 +266,7 @@ def add_index_columns(df, group_lookup, creative_lookup, camp_col, adg_col, ad_c
 
     out.insert(0, '소재_D7초과여부', creative_status)
     out.insert(0, '그룹_D7초과여부', group_status)
-    out.insert(0, '사업부구분', biz_list)
+    out['사업부구분'] = biz_list
     return out
 
 
@@ -333,12 +334,15 @@ def process_media(raw):
 def process_category(raw, group_lookup, creative_lookup):
     """
     Returns (result_df, needs_manual_bool_array).
-    result_df columns: 사업부구분, 그룹_D7초과여부, 소재_D7초과여부, 날짜, Media, Campaign,
-                       Ad Group, USP_Category, 카테고리_unique, 카테고리_qty, 카테고리_price, 수기확인필요
+
+    출력 열 구조:
+      그룹_D7초과여부, 소재_D7초과여부, <원본 Date~소구점 69열, 순서 그대로>,
+      사업부구분, 여백(빈값), 피드구분(빈값), <카테고리 구매 unique ~ 노크잇 price 48열>
+    카테고리 구매 unique/quantity/price 3열의 값만 사업부구분 매핑값으로 치환하고,
+    나머지 45열(패션·뷰티·...·노크잇)은 원본 값 그대로 유지한다.
 
     사업부구분은 카테고리 파일 자체에는 없고(BR열은 '카테고리 구매 unique' 수치 데이터)
-    인덱스 그룹 시트(Campaign+Ad Group 매칭)에서만 가져온다. 이 값으로 카테고리_unique/qty/price를
-    어느 카테고리 그룹 열(이름 기준)에서 가져올지 결정한다. 매칭되지 않는 행도 삭제하지 않고
+    인덱스 그룹 시트(Campaign+Ad Group 매칭)에서만 가져온다. 매칭되지 않는 행도 삭제하지 않고
     그대로 유지하며 '#인덱스추가'로 표시한다.
     """
     df = raw.copy()
@@ -355,13 +359,17 @@ def process_category(raw, group_lookup, creative_lookup):
         return pd.DataFrame(), np.array([], dtype=bool)
 
     n            = len(df)
-    out_u        = np.full(n, np.nan, object)
-    out_q        = np.full(n, np.nan, object)
-    out_p        = np.full(n, np.nan, object)
     manual       = np.zeros(n, bool)
     biz_list     = np.full(n, '', object)
     group_status = np.full(n, '', object)
     creative_status = np.full(n, '', object)
+
+    generic_u, generic_q, generic_p = GENERIC_CATEGORY_COLS
+    # object dtype으로 복사 — pandas 3.x의 엄격한 dtype(예: string[pyarrow])에 다른 타입 값을
+    # 대입할 때 발생하는 TypeError를 피하기 위함(앞서 4~7일치 0-처리에서 겪은 문제와 동일한 원인).
+    out_u = df[generic_u].astype(object).copy() if generic_u in df.columns else pd.Series([np.nan] * n, dtype=object)
+    out_q = df[generic_q].astype(object).copy() if generic_q in df.columns else pd.Series([np.nan] * n, dtype=object)
+    out_p = df[generic_p].astype(object).copy() if generic_p in df.columns else pd.Series([np.nan] * n, dtype=object)
 
     for pos, (_, row) in enumerate(df.iterrows()):
         camp     = str(row_val(row, C_CAMP, '')).strip()
@@ -401,26 +409,34 @@ def process_category(raw, group_lookup, creative_lookup):
         else:
             manual[pos] = True  # 인덱스에 없는 Campaign+Ad Group
 
-        u_name, q_name, p_name = category_group_cols(group_name) if group_name else GENERIC_CATEGORY_COLS
-        out_u[pos] = row[u_name] if u_name in df.columns else np.nan
-        out_q[pos] = row[q_name] if q_name in df.columns else np.nan
-        out_p[pos] = row[p_name] if p_name in df.columns else np.nan
+        if group_name:
+            u_name, q_name, p_name = category_group_cols(group_name)
+            out_u.iloc[pos] = row[u_name] if u_name in df.columns else np.nan
+            out_q.iloc[pos] = row[q_name] if q_name in df.columns else np.nan
+            out_p.iloc[pos] = row[p_name] if p_name in df.columns else np.nan
+        # group_name이 없으면(미매칭) 원본 '카테고리 구매' 값(총계 폴백) 그대로 유지
 
-    result = pd.DataFrame({
-        '사업부구분':        biz_list,
-        '그룹_D7초과여부':   group_status,
-        '소재_D7초과여부':   creative_status,
-        '날짜':             df.iloc[:, C_DATE].dt.date      if C_DATE  < df.shape[1] else '',
-        'Media':            df.iloc[:, C_MEDIA]             if C_MEDIA < df.shape[1] else '',
-        'Campaign':         df.iloc[:, C_CAMP]              if C_CAMP  < df.shape[1] else '',
-        'Ad Group':         df.iloc[:, C_ADG]               if C_ADG   < df.shape[1] else '',
-        'USP_Category':     df.iloc[:, C_AV]                if C_AV    < df.shape[1] else '',
-        '카테고리_unique':  out_u,
-        '카테고리_qty':     out_q,
-        '카테고리_price':   out_p,
-        '수기확인필요':     manual,
-    })
-    return result, manual
+    if generic_u in df.columns:
+        df[generic_u] = out_u
+        df[generic_q] = out_q
+        df[generic_p] = out_p
+
+    # 소구점 다음에 사업부구분 / 여백(빈값) / 피드구분(빈값) 삽입
+    if '소구점' in df.columns:
+        pos_after = df.columns.get_loc('소구점') + 1
+        df.insert(pos_after, '사업부구분', biz_list)
+        df.insert(pos_after + 1, '여백', '')
+        df.insert(pos_after + 2, '피드구분', '')
+    else:
+        df['사업부구분'] = biz_list
+        df['여백'] = ''
+        df['피드구분'] = ''
+
+    # 맨 앞 2열: 그룹_D7초과여부 / 소재_D7초과여부
+    df.insert(0, '소재_D7초과여부', creative_status)
+    df.insert(0, '그룹_D7초과여부', group_status)
+
+    return df, manual
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -450,8 +466,7 @@ def build_excel(media_df, cat_df):
             media_df.to_excel(writer, sheet_name='미디어_가공', index=False)
 
         if cat_df is not None and not cat_df.empty:
-            rd_cols = ['날짜', 'Media', 'Campaign', 'Ad Group',
-                       '카테고리_unique', '카테고리_qty', '카테고리_price']
+            rd_cols = ['Date', 'Media', 'Campaign', 'Ad Group', '사업부구분'] + list(GENERIC_CATEGORY_COLS)
             rd = cat_df[[c for c in rd_cols if c in cat_df.columns]]
             rd.to_excel(writer, sheet_name='카테고리_RD붙여넣기', index=False)
             cat_df.to_excel(writer, sheet_name='카테고리_전체', index=False)
@@ -619,8 +634,8 @@ def main():
                                 f"({len(CATEGORY_COLUMNS)}개)과 다릅니다. 컬럼 구조를 확인해주세요.")
                     if not group_lookup:
                         st.warning("⚠️ 적용된 인덱스가 없어 사업부구분을 판별할 수 없습니다. "
-                                   "전체 행이 '#인덱스추가'로 표시되고 카테고리_unique/qty/price는 "
-                                   "'카테고리 구매' 총계로 대체됩니다. 인덱스 파일을 먼저 업로드해주세요.")
+                                   "전체 행이 '#인덱스추가'로 표시되고 카테고리 구매 unique/quantity/price는 "
+                                   "원본 총계 값 그대로 유지됩니다. 인덱스 파일을 먼저 업로드해주세요.")
                     with st.spinner("카테고리 데이터 가공 중..."):
                         try:
                             c_df, c_manual = process_category(cat_raw, group_lookup, creative_lookup)
@@ -644,9 +659,10 @@ def main():
         st.subheader("📊 미디어 가공 결과")
         st.metric("전체 행", len(media_df))
 
-        # 미리보기: 인덱스 열 + 식별자 열(Date~ad)
-        id_cols = [c for c in ['사업부구분', '그룹_D7초과여부', '소재_D7초과여부'] if c in media_df.columns]
+        # 미리보기: 인덱스 열(그룹/소재 D7) + 식별자 열(Date~ad) + 맨 끝 사업부구분
+        id_cols = [c for c in ['그룹_D7초과여부', '소재_D7초과여부'] if c in media_df.columns]
         id_cols += [c for c in MEDIA_COLUMNS[:8] if c in media_df.columns]
+        id_cols += [c for c in ['사업부구분'] if c in media_df.columns]
 
         preview = media_df[id_cols].copy()
 

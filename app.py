@@ -90,9 +90,7 @@ def read_csv_robust(uploaded_file):
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Media file
-M_DATE,  M_CAMP,  M_ADG, M_AD = ci('A'), ci('F'), ci('G'), ci('H')
-M_NUM_ST, M_BL            = ci('I'), ci('BL')   # numeric block: I(8)..BL(63)
-M_BL_NAME = MEDIA_COLUMNS[M_BL]                 # '집약형(Adef)' — 열 삽입 후에도 이름으로 참조
+M_DATE, M_CAMP, M_ADG, M_AD = ci('A'), ci('F'), ci('G'), ci('H')
 
 # Category file
 C_DATE, C_MEDIA, C_CAMP, C_ADG, C_AD = ci('A'), ci('E'), ci('F'), ci('G'), ci('H')
@@ -286,17 +284,8 @@ def parse_flexible_dates(series):
 # Media processing
 # ──────────────────────────────────────────────────────────────────────────────
 
-def process_media(raw, yesterday):
-    """
-    Returns (processed_df, is_d4_7_bool_array).
-    • 1~3일치: 전체 열 그대로
-    • 4~7일치: I열~BK열 → 0, BL열 원본 유지
-    """
-    if raw.shape[1] <= M_BL:
-        st.error(f"미디어 파일에 BL열({M_BL + 1}번째 열) 이상이 필요합니다. "
-                 f"현재 열 수: {raw.shape[1]}")
-        return None, None
-
+def process_media(raw):
+    """업로드된 파일의 모든 데이터를 날짜 범위 필터링 없이 그대로 가공한다."""
     df = raw.copy()
     date_col = df.columns[M_DATE]
 
@@ -307,39 +296,15 @@ def process_media(raw, yesterday):
     if df.empty:
         st.warning(f"⚠️ 미디어 파일: A열(날짜)을 인식할 수 있는 행이 없습니다. "
                     f"날짜 형식을 확인해주세요. (원본 {n_before}행 중 0행 인식)")
-        return df, np.array([], dtype=bool)
 
-    d7_start = yesterday - pd.Timedelta(days=6)
-    d3_start = yesterday - pd.Timedelta(days=2)  # 3일치 중 가장 오래된 날
-
-    df = df[(df[date_col] >= d7_start) & (df[date_col] <= yesterday)].copy()
-    df = df.reset_index(drop=True)
-
-    if df.empty:
-        st.warning(f"⚠️ 미디어 파일: 최근 7일({d7_start.date()} ~ {yesterday.date()}) 범위에 "
-                    "해당하는 데이터가 없습니다. '기준 날짜 설정'에서 날짜를 확인해주세요.")
-        return df, np.array([], dtype=bool)
-
-    is_d4_7 = (df[date_col] < d3_start).values  # bool array aligned with df
-
-    # Zero out I(8)..BK(62) for day-4-to-7 rows; BL(63) kept
-    # 열을 object dtype으로 바꾼 뒤 대입 — pandas 3.x는 문자열 열을 기본적으로
-    # string[pyarrow]로 읽어들이는데, 여기에 int 0을 바로 대입하면 TypeError가 발생한다
-    # (I~BK 범위에는 숫자 지표 외에 OS/Gender/Age/소재 관련 텍스트 열도 섞여 있음).
-    for col_i in range(M_NUM_ST, M_BL):
-        if col_i < df.shape[1]:
-            col_name = df.columns[col_i]
-            df[col_name] = df[col_name].astype(object)
-            df.iloc[is_d4_7, col_i] = 0
-
-    return df, is_d4_7
+    return df
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Category processing
 # ──────────────────────────────────────────────────────────────────────────────
 
-def process_category(raw, yesterday, group_lookup, creative_lookup):
+def process_category(raw, group_lookup, creative_lookup):
     """
     Returns (result_df, needs_manual_bool_array).
     result_df columns: 사업부구분, 그룹_D7초과여부, 소재_D7초과여부, 날짜, Media, Campaign,
@@ -357,11 +322,10 @@ def process_category(raw, yesterday, group_lookup, creative_lookup):
         return pd.DataFrame(), np.array([], dtype=bool)
 
     df[date_col] = parse_flexible_dates(df[date_col])
-    df = df.dropna(subset=[date_col])
-    df = df[df[date_col].dt.normalize() == yesterday].copy().reset_index(drop=True)
+    df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
 
     if df.empty:
-        st.warning(f"카테고리 파일: 전일자({yesterday.date()}) 데이터가 없습니다.")
+        st.warning("카테고리 파일: A열(날짜)을 인식할 수 있는 행이 없습니다. 날짜 형식을 확인해주세요.")
         return pd.DataFrame(), np.array([], dtype=bool)
 
     n            = len(df)
@@ -481,7 +445,6 @@ def _init_session_state():
         'index_filename':     None,
         'index_uploaded_at':  None,
         'media_df':           None,
-        'media_d4_7':         None,
         'cat_df':             None,
         'cat_manual':         None,
     }
@@ -495,21 +458,6 @@ def main():
     st.caption("미디어·카테고리 CSV 로우 데이터를 업로드하면 RD 시트 형식으로 자동 가공합니다.")
 
     _init_session_state()
-
-    # ── 날짜 설정
-    with st.expander("⚙️ 기준 날짜 설정 (기본: 자동 전일자)", expanded=False):
-        use_custom  = st.checkbox("날짜 직접 지정")
-        custom_date = st.date_input(
-            "기준일 (이 날짜를 '전일자'로 간주)",
-            value=(pd.Timestamp.now() - pd.Timedelta(days=1)).date()
-        )
-    yesterday = pd.Timestamp(custom_date) if use_custom \
-        else pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-    st.caption(f"현재 기준 전일자: **{yesterday.date()}**  |  "
-               f"최근 3일: {(yesterday - pd.Timedelta(days=2)).date()} ~ {yesterday.date()}  |  "
-               f"4~7일: {(yesterday - pd.Timedelta(days=6)).date()} ~ {(yesterday - pd.Timedelta(days=3)).date()}")
-
-    st.divider()
 
     # ── 파일 업로드 (섹션별로 제목 행 오른쪽에 버튼, 업로더는 그 아래 전체 폭)
     # 제목 + 버튼 행 — 중첩 컬럼이 아닌 하나의 행(6칸)으로 구성해야 좁은 폭에서도
@@ -610,8 +558,8 @@ def main():
                                 f"({len(MEDIA_COLUMNS)}개)과 다릅니다. 컬럼 구조를 확인해주세요.")
                     with st.spinner("미디어 데이터 가공 중..."):
                         try:
-                            m_df, m_d47 = process_media(media_raw, yesterday)
-                            if m_df is not None:
+                            m_df = process_media(media_raw)
+                            if not m_df.empty:
                                 date_col = m_df.columns[M_DATE]
                                 camp_col = m_df.columns[M_CAMP]
                                 adg_col  = m_df.columns[M_ADG]
@@ -620,8 +568,7 @@ def main():
                                     m_df, group_lookup, creative_lookup,
                                     camp_col, adg_col, ad_col, date_col
                                 )
-                                st.session_state['media_df']   = m_df
-                                st.session_state['media_d4_7'] = m_d47
+                            st.session_state['media_df'] = m_df
                         except Exception:
                             st.error("미디어 처리 오류:\n```\n" + traceback.format_exc() + "\n```")
 
@@ -650,7 +597,7 @@ def main():
                                    "'카테고리 구매' 총계로 대체됩니다. 인덱스 파일을 먼저 업로드해주세요.")
                     with st.spinner("카테고리 데이터 가공 중..."):
                         try:
-                            c_df, c_manual = process_category(cat_raw, yesterday, group_lookup, creative_lookup)
+                            c_df, c_manual = process_category(cat_raw, group_lookup, creative_lookup)
                             st.session_state['cat_df']     = c_df
                             st.session_state['cat_manual'] = c_manual
                         except Exception:
@@ -661,7 +608,6 @@ def main():
         st.info("파일을 업로드한 후 각 섹션의 버튼을 눌러주세요.")
 
     media_df   = st.session_state['media_df']
-    media_d4_7 = st.session_state['media_d4_7']
     cat_df     = st.session_state['cat_df']
     cat_manual = st.session_state['cat_manual']
 
@@ -670,28 +616,16 @@ def main():
     # ────────────────────────────── 미디어 결과 ──────────────────────────────
     if media_df is not None and not media_df.empty:
         st.subheader("📊 미디어 가공 결과")
+        st.metric("전체 행", len(media_df))
 
-        n_d4_7 = int(media_d4_7.sum()) if media_d4_7 is not None else 0
-        m1, m2, m3 = st.columns(3)
-        m1.metric("전체 행",            len(media_df))
-        m2.metric("1~3일치 (전체 열)",  len(media_df) - n_d4_7)
-        m3.metric("4~7일치 (BL열만 유효)", n_d4_7)
-
-        # 미리보기: 인덱스 열 + 식별자 열(Date~ad) + 집약형(Adef)열
+        # 미리보기: 인덱스 열 + 식별자 열(Date~ad)
         id_cols = [c for c in ['사업부구분', '그룹_D7초과여부', '소재_D7초과여부'] if c in media_df.columns]
         id_cols += [c for c in MEDIA_COLUMNS[:8] if c in media_df.columns]
-        if M_BL_NAME in media_df.columns and M_BL_NAME not in id_cols:
-            id_cols.append(M_BL_NAME)
 
-        preview   = media_df[id_cols].copy()
-        mask_prev = media_d4_7[:len(preview)] if media_d4_7 is not None else None
+        preview = media_df[id_cols].copy()
 
-        st.dataframe(
-            highlight_rows(preview, mask_prev, '#FFF3CD'),
-            use_container_width=True, height=320
-        )
-        st.caption("🟡 노란 행 = 4~7일치: I열~BK열 수치 0 처리됨, BL열 원본 유지  "
-                   "| 전체 열은 다운로드 파일에 포함됩니다.")
+        st.dataframe(preview, use_container_width=True, height=320)
+        st.caption("업로드된 모든 날짜의 데이터가 그대로 가공됩니다 | 전체 열은 다운로드 파일에 포함됩니다.")
 
     # ────────────────────────────── 카테고리 결과 ────────────────────────────
     if cat_df is not None and not cat_df.empty:
@@ -738,7 +672,7 @@ def main():
 
         sheets = []
         if media_df is not None and not media_df.empty:
-            sheets.append("**미디어_가공**: 7일치 전체 열 (4~7일치 수치 0 처리)")
+            sheets.append("**미디어_가공**: 업로드된 전체 날짜 데이터")
         if cat_df is not None and not cat_df.empty:
             sheets.append("**카테고리_RD붙여넣기**: RD 시트 BU~BW 붙여넣기용")
             sheets.append("**카테고리_전체**: 수기확인 플래그 포함 전체 데이터")

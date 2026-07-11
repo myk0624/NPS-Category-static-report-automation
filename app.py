@@ -463,22 +463,6 @@ def arrow_safe_preview(df):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Row-highlight helper
-# ──────────────────────────────────────────────────────────────────────────────
-
-def highlight_rows(df, mask, color):
-    """Return pandas Styler with rows highlighted where mask[i] is True."""
-    def _fn(x):
-        bg = pd.DataFrame('', index=x.index, columns=x.columns)
-        if mask is not None:
-            for i, flag in enumerate(mask):
-                if flag and i < len(x):
-                    bg.iloc[i] = f'background-color: {color}'
-        return bg
-    return df.style.apply(_fn, axis=None)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # Excel export builder
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -703,18 +687,18 @@ def main():
         else:
             st.success("모든 행이 정상 매핑되었습니다.")
 
-        st.dataframe(
-            highlight_rows(arrow_safe_preview(cat_df), cat_manual, '#F8D7DA'),
-            use_container_width=True, height=320
-        )
-        st.caption("🔴 빨간 행 = 수기 확인 필요  "
-                   "| 다운로드 시 카테고리_RD붙여넣기 시트가 RD 시트 BU~BW 붙여넣기용입니다.")
+        # fillna('') 후 astype(str) — astype(str) 단독으로는 NaN이 float로 남아
+        # 다른 문자열 값과 섞인 채로 유지되어 ArrowTypeError가 재발하므로, 결측치를
+        # 먼저 빈 문자열로 채운 뒤 전체를 문자열로 변환해 완전히 균일한 타입으로 만든다.
+        cat_df_display = cat_df.fillna('').astype(str)
+        st.dataframe(cat_df_display, use_container_width=True, height=320)
+        st.caption("다운로드 시 카테고리_RD붙여넣기 시트가 RD 시트 BU~BW 붙여넣기용입니다.")
 
         # 수기 확인 필요 행 별도 표시
         if n_m:
             with st.expander(f"🔍 수기 확인 필요 항목 ({n_m}개) 자세히 보기"):
                 manual_rows = cat_df[cat_manual.astype(bool)].copy() if cat_manual is not None else pd.DataFrame()
-                st.dataframe(arrow_safe_preview(manual_rows), use_container_width=True)
+                st.dataframe(manual_rows.fillna('').astype(str), use_container_width=True)
 
     # ────────────────────────────── 다운로드 ─────────────────────────────────
     st.divider()

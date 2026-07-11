@@ -92,30 +92,115 @@ def read_csv_robust(uploaded_file):
 # Media file
 M_DATE,  M_CAMP,  M_ADG  = ci('A'), ci('F'), ci('G')
 M_NUM_ST, M_BL            = ci('I'), ci('BL')   # numeric block: I(8)..BL(63)
+M_BL_NAME = MEDIA_COLUMNS[M_BL]                 # '집약형(Adef)' — 열 삽입 후에도 이름으로 참조
 
 # Category file
 C_DATE, C_MEDIA, C_CAMP, C_ADG = ci('A'), ci('E'), ci('F'), ci('G')
-C_AV = ci('AV')                  # 47 – USP Category (사업부-연합 분기)
-C_BR = ci('BR')                  # 69 – 사업부구분
-C_BS, C_BT, C_BU = ci('BS'), ci('BT'), ci('BU')  # 70, 71, 72
+C_AV = ci('AV')                  # 47 – USP Category (사업부-연합 세부 분기용, 원본 그대로 유효)
 
-# Replacement-source columns per 사업부: (unique_col, qty_col, price_col)
-BIZ_MAP = {
-    '사업부-가구':          (ci('CE'), ci('CF'), ci('CG')),
-    '사업부-그로서리-전체': (ci('CK'), ci('CL'), ci('CM')),
-    '사업부-그로서리-별도': (ci('CK'), ci('CL'), ci('CM')),
-    '사업부-리빙':          (ci('CW'), ci('CX'), ci('CY')),
-    '사업부-자동차공구':    (ci('CZ'), ci('DA'), ci('DB')),
-    '사업부-키즈':          (ci('CH'), ci('CI'), ci('CJ')),
-    '사업부-펫':            (ci('DC'), ci('DD'), ci('DE')),
-    '사업부-여가생활e쿠폰': (ci('DI'), ci('DJ'), ci('DK')),
+# 사업부구분(인덱스 그룹 시트 기준) → 카테고리 그룹명. 그룹명 + ' unique'/' quantity'/' price'로
+# CATEGORY_EXTRA_COLUMNS의 실제 열 이름을 만든다 (위치가 아닌 이름으로 조회 — BR열 등
+# 위치 기반 매핑이 실제 컬럼 구조와 어긋났던 문제 재발 방지).
+BIZ_TO_CATEGORY_GROUP = {
+    '사업부-가구':          '가구',
+    '사업부-그로서리-전체': '식품',
+    '사업부-그로서리-별도': '식품',
+    '사업부-리빙':          '리빙',
+    '사업부-자동차공구':    '자동차/공구',
+    '사업부-키즈':          '키즈',
+    '사업부-펫':            '펫',
+    '사업부-여가생활e쿠폰': '여가/도서(e쿠폰)',
 }
-USP_MAP = {
-    'LVG':     (ci('CW'), ci('CX'), ci('CY')),
-    'PET':     (ci('DC'), ci('DD'), ci('DE')),
-    'CARTOOL': (ci('CZ'), ci('DA'), ci('DB')),
-    'KID':     (ci('CH'), ci('CI'), ci('CJ')),
+USP_TO_CATEGORY_GROUP = {
+    'LVG':     '리빙',
+    'PET':     '펫',
+    'CARTOOL': '자동차/공구',
+    'KID':     '키즈',
 }
+GENERIC_CATEGORY_COLS = ('카테고리 구매 unique', '카테고리 구매 quantity', '카테고리 구매 price')
+
+
+def category_group_cols(group_name):
+    return (f'{group_name} unique', f'{group_name} quantity', f'{group_name} price')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 인덱스 파일 (그룹/소재 시트)
+# ──────────────────────────────────────────────────────────────────────────────
+
+INDEX_GROUP_COLUMNS    = ['사업부구분', 'Media', 'Campaign', 'Ad Group', '종료일']
+INDEX_CREATIVE_COLUMNS = ['사업부구분', 'Media', 'Campaign', 'Ad Group', 'Ad',
+                          '프로모션', '기여기간', '종료일']
+
+
+def parse_index_file(uploaded_file):
+    """인덱스 xlsx(그룹/소재 2개 시트)를 읽어 (group_df, creative_df)로 반환.
+    시트명에 '그룹'/'소재'가 포함되면 이를 우선 사용하고, 없으면 시트 순서(1번째=그룹,
+    2번째=소재)로 판별한다."""
+    sheets = pd.read_excel(uploaded_file, sheet_name=None, header=0, engine='openpyxl')
+    group_df = creative_df = None
+    for name, df in sheets.items():
+        if '그룹' in str(name):
+            group_df = df
+        elif '소재' in str(name):
+            creative_df = df
+
+    names = list(sheets.keys())
+    if group_df is None and len(names) >= 1:
+        group_df = sheets[names[0]]
+    if creative_df is None and len(names) >= 2:
+        creative_df = sheets[names[1]]
+
+    return group_df, creative_df
+
+
+def build_index_lookup(group_df):
+    """그룹 시트 → {(Campaign, Ad Group): (사업부구분, 종료일 Timestamp)} 매핑."""
+    lookup = {}
+    if group_df is None or group_df.empty:
+        return lookup
+    if 'Campaign' not in group_df.columns or 'Ad Group' not in group_df.columns:
+        return lookup
+
+    biz_col = '사업부구분' if '사업부구분' in group_df.columns else None
+    end_col = '종료일'    if '종료일'    in group_df.columns else None
+
+    g = group_df.copy()
+    if end_col:
+        g[end_col] = pd.to_datetime(g[end_col], errors='coerce')
+
+    for _, row in g.iterrows():
+        key = (str(row['Campaign']).strip(), str(row['Ad Group']).strip())
+        lookup[key] = (
+            row[biz_col] if biz_col else np.nan,
+            row[end_col] if end_col else pd.NaT,
+        )
+    return lookup
+
+
+def add_index_columns(df, lookup, camp_col, adg_col, date_col):
+    """인덱스 매칭 결과를 맨 앞 두 열('사업부구분(인덱스)', 'D7_상태')로 추가.
+    Campaign + Ad Group 매칭. 행 삭제는 하지 않고 상태만 표시(포함/제외)."""
+    out   = df.copy()
+    dates = pd.to_datetime(out[date_col], errors='coerce')
+
+    biz_list, status_list = [], []
+    for camp, adg, d in zip(out[camp_col], out[adg_col], dates):
+        match = lookup.get((str(camp).strip(), str(adg).strip()))
+        if match is None:
+            biz_list.append(np.nan)
+            status_list.append('포함')
+            continue
+        biz, end_date = match
+        biz_list.append(biz)
+        if pd.isna(end_date) or pd.isna(d):
+            status_list.append('포함')
+        else:
+            status_list.append('포함' if d <= end_date + pd.Timedelta(days=7) else '제외')
+
+    out.insert(0, 'D7_상태', status_list)
+    out.insert(0, '사업부구분(인덱스)', biz_list)
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -131,47 +216,10 @@ def row_val(row, idx, default=np.nan):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# D7 end-date filter
-# ──────────────────────────────────────────────────────────────────────────────
-
-def apply_d7_filter(data, end_df, camp_col, adg_col, date_col):
-    """Keep rows where data_date ≤ campaign_end_date + 7 days.
-    Rows not found in end_df are kept as-is."""
-    if end_df is None or end_df.empty:
-        return data
-    ec = end_df.columns.tolist()
-    if len(ec) < 2:
-        return data
-
-    has_adg      = len(ec) >= 3
-    end_date_col = ec[2] if has_adg else ec[1]
-
-    end = end_df.copy()
-    end[end_date_col] = pd.to_datetime(end[end_date_col], errors='coerce')
-    end = end.dropna(subset=[end_date_col])
-
-    if has_adg:
-        lookup = {
-            (str(r[ec[0]]).strip(), str(r[ec[1]]).strip()): r[end_date_col]
-            for _, r in end.iterrows()
-        }
-    else:
-        lookup = {str(r[ec[0]]).strip(): r[end_date_col] for _, r in end.iterrows()}
-
-    def keep(row):
-        k = (str(row[camp_col]).strip(), str(row[adg_col]).strip()) if has_adg \
-            else str(row[camp_col]).strip()
-        ed = lookup.get(k)
-        return ed is None or row[date_col] <= ed + pd.Timedelta(days=7)
-
-    return data[data.apply(keep, axis=1)].reset_index(drop=True)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # Media processing
 # ──────────────────────────────────────────────────────────────────────────────
 
-def process_media(raw, end_df, yesterday):
+def process_media(raw, yesterday):
     """
     Returns (processed_df, is_d4_7_bool_array).
     • 1~3일치: 전체 열 그대로
@@ -184,8 +232,6 @@ def process_media(raw, end_df, yesterday):
 
     df = raw.copy()
     date_col = df.columns[M_DATE]
-    camp_col = df.columns[M_CAMP]
-    adg_col  = df.columns[M_ADG]
 
     df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
     df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
@@ -195,9 +241,6 @@ def process_media(raw, end_df, yesterday):
 
     df = df[(df[date_col] >= d7_start) & (df[date_col] <= yesterday)].copy()
     df = df.reset_index(drop=True)
-
-    if end_df is not None and not end_df.empty:
-        df = apply_d7_filter(df, end_df, camp_col, adg_col, date_col)
 
     is_d4_7 = (df[date_col] < d3_start).values  # bool array aligned with df
 
@@ -213,11 +256,15 @@ def process_media(raw, end_df, yesterday):
 # Category processing
 # ──────────────────────────────────────────────────────────────────────────────
 
-def process_category(raw, end_df, yesterday):
+def process_category(raw, yesterday, lookup):
     """
     Returns (result_df, needs_manual_bool_array).
-    result_df columns: 날짜, Media, Campaign, Ad Group, 사업부구분, USP_Category,
-                       카테고리_unique, 카테고리_qty, 카테고리_price, 수기확인필요
+    result_df columns: 사업부구분(인덱스), D7_상태, 날짜, Media, Campaign, Ad Group,
+                       USP_Category, 카테고리_unique, 카테고리_qty, 카테고리_price, 수기확인필요
+
+    사업부구분은 카테고리 파일 자체에는 없고(BR열은 '카테고리 구매 unique' 수치 데이터)
+    인덱스 그룹 시트(Campaign+Ad Group 매칭)에서만 가져온다. 이 값으로 카테고리_unique/qty/price를
+    어느 카테고리 그룹 열(이름 기준)에서 가져올지 결정한다.
     """
     df = raw.copy()
     date_col = safe_col(df, C_DATE)
@@ -235,52 +282,54 @@ def process_category(raw, end_df, yesterday):
 
     camp_col = safe_col(df, C_CAMP)
     adg_col  = safe_col(df, C_ADG)
-    if end_df is not None and not end_df.empty and camp_col and adg_col:
-        df = apply_d7_filter(df, end_df, camp_col, adg_col, date_col)
 
-    n      = len(df)
-    out_u  = np.full(n, np.nan, object)
-    out_q  = np.full(n, np.nan, object)
-    out_p  = np.full(n, np.nan, object)
-    manual = np.zeros(n, bool)
+    n        = len(df)
+    out_u    = np.full(n, np.nan, object)
+    out_q    = np.full(n, np.nan, object)
+    out_p    = np.full(n, np.nan, object)
+    manual   = np.zeros(n, bool)
+    biz_list = np.full(n, np.nan, object)
+    d7_list  = ['포함'] * n
 
     for pos, (_, row) in enumerate(df.iterrows()):
-        biz = str(row_val(row, C_BR, '')).strip()
+        camp = str(row_val(row, C_CAMP, '')).strip() if camp_col else ''
+        adg  = str(row_val(row, C_ADG, '')).strip()  if adg_col  else ''
+        match = lookup.get((camp, adg))
 
-        if biz == '사업부-연합':
-            usp  = str(row_val(row, C_AV, '')).strip().upper()
-            cols = USP_MAP.get(usp)
-            if cols:
-                out_u[pos] = row_val(row, cols[0])
-                out_q[pos] = row_val(row, cols[1])
-                out_p[pos] = row_val(row, cols[2])
-            else:
-                # USP 값 미매핑 → 원본 유지 + 수기 확인 플래그
-                out_u[pos]  = row_val(row, C_BS)
-                out_q[pos]  = row_val(row, C_BT)
-                out_p[pos]  = row_val(row, C_BU)
+        biz      = match[0] if match else np.nan
+        end_date = match[1] if match else pd.NaT
+        biz_list[pos] = biz
+        biz_str  = str(biz).strip() if pd.notna(biz) else ''
+
+        row_date = row_val(row, C_DATE)
+        if pd.notna(end_date) and pd.notna(row_date) and row_date > end_date + pd.Timedelta(days=7):
+            d7_list[pos] = '제외'
+
+        group_name = None
+        if biz_str == '사업부-연합':
+            usp = str(row_val(row, C_AV, '')).strip().upper()
+            group_name = USP_TO_CATEGORY_GROUP.get(usp)
+            if group_name is None:
                 manual[pos] = True
-
-        elif biz in BIZ_MAP:
-            c_u, c_q, c_p = BIZ_MAP[biz]
-            out_u[pos] = row_val(row, c_u)
-            out_q[pos] = row_val(row, c_q)
-            out_p[pos] = row_val(row, c_p)
-
+        elif biz_str:
+            group_name = BIZ_TO_CATEGORY_GROUP.get(biz_str)
+            if group_name is None:
+                manual[pos] = True
         else:
-            # 알 수 없는 사업부구분 → 원본 유지 + 수기 확인 플래그
-            out_u[pos]  = row_val(row, C_BS)
-            out_q[pos]  = row_val(row, C_BT)
-            out_p[pos]  = row_val(row, C_BU)
-            if biz and biz.lower() not in ('nan', ''):
-                manual[pos] = True
+            manual[pos] = True  # 인덱스에 없는 Campaign+Ad Group
+
+        u_name, q_name, p_name = category_group_cols(group_name) if group_name else GENERIC_CATEGORY_COLS
+        out_u[pos] = row[u_name] if u_name in df.columns else np.nan
+        out_q[pos] = row[q_name] if q_name in df.columns else np.nan
+        out_p[pos] = row[p_name] if p_name in df.columns else np.nan
 
     result = pd.DataFrame({
+        '사업부구분(인덱스)': biz_list,
+        'D7_상태':           d7_list,
         '날짜':             df.iloc[:, C_DATE].dt.date      if C_DATE  < df.shape[1] else '',
         'Media':            df.iloc[:, C_MEDIA]             if C_MEDIA < df.shape[1] else '',
         'Campaign':         df.iloc[:, C_CAMP]              if C_CAMP  < df.shape[1] else '',
         'Ad Group':         df.iloc[:, C_ADG]               if C_ADG   < df.shape[1] else '',
-        '사업부구분':       df.iloc[:, C_BR]                if C_BR    < df.shape[1] else '',
         'USP_Category':     df.iloc[:, C_AV]                if C_AV    < df.shape[1] else '',
         '카테고리_unique':  out_u,
         '카테고리_qty':     out_q,
@@ -310,7 +359,7 @@ def highlight_rows(df, mask, color):
 # Excel export builder
 # ──────────────────────────────────────────────────────────────────────────────
 
-def build_excel(media_df, cat_df, end_df):
+def build_excel(media_df, cat_df):
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         if media_df is not None and not media_df.empty:
@@ -323,9 +372,6 @@ def build_excel(media_df, cat_df, end_df):
             rd.to_excel(writer, sheet_name='카테고리_RD붙여넣기', index=False)
             cat_df.to_excel(writer, sheet_name='카테고리_전체', index=False)
 
-        if end_df is not None and not end_df.empty:
-            end_df.to_excel(writer, sheet_name='캠페인종료일', index=False)
-
     buf.seek(0)
     return buf.getvalue()
 
@@ -334,10 +380,28 @@ def build_excel(media_df, cat_df, end_df):
 # Streamlit UI
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _init_session_state():
+    defaults = {
+        'index_group_df':     None,
+        'index_creative_df':  None,
+        'index_filename':     None,
+        'index_uploaded_at':  None,
+        'index_sig':          None,
+        'media_df':           None,
+        'media_d4_7':         None,
+        'cat_df':             None,
+        'cat_manual':         None,
+    }
+    for k, v in defaults.items():
+        st.session_state.setdefault(k, v)
+
+
 def main():
     st.set_page_config(page_title="NPS Report 가공기", layout="wide", page_icon="📊")
     st.title("📊 NPS Report 데이터 가공기")
     st.caption("미디어·카테고리 CSV 로우 데이터를 업로드하면 RD 시트 형식으로 자동 가공합니다.")
+
+    _init_session_state()
 
     # ── 날짜 설정
     with st.expander("⚙️ 기준 날짜 설정 (기본: 자동 전일자)", expanded=False):
@@ -367,79 +431,129 @@ def main():
         cat_file = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf')
         if cat_file:
             st.success(f"✅ {cat_file.name}")
-    st.caption("파일명과 무관하게 컬럼 구조를 읽어 미디어/카테고리 파일을 자동으로 판별·교정합니다.")
 
     with c3:
-        st.markdown("### 📅 캠페인 종료일 (선택)")
-        end_file = st.file_uploader("종료일 xlsx 업로드", type=['xlsx', 'xls'], key='ef')
-        if end_file:
-            st.success(f"✅ {end_file.name}")
-        st.caption("열 구조: **A** Campaign | **B** Ad Group | **C** End Date\n\n"
-                   "종료일 + 7일 이후 데이터는 자동 제외됩니다.")
+        st.markdown("### 🗂️ 인덱스 파일")
+        index_file = st.file_uploader("인덱스 xlsx 업로드", type=['xlsx', 'xls'], key='ixf')
+
+        if index_file is not None:
+            sig = (index_file.name, index_file.size)
+            if st.session_state['index_sig'] != sig:
+                try:
+                    group_df, creative_df = parse_index_file(index_file)
+                    missing = [c for c in INDEX_GROUP_COLUMNS if c not in group_df.columns]
+                    if missing:
+                        st.error(f"인덱스 그룹 시트에 필요한 열이 없습니다: {', '.join(missing)}")
+                    else:
+                        st.session_state['index_group_df']    = group_df
+                        st.session_state['index_creative_df'] = creative_df
+                        st.session_state['index_filename']    = index_file.name
+                        st.session_state['index_uploaded_at'] = pd.Timestamp.now()
+                        st.session_state['index_sig']         = sig
+                except Exception as e:
+                    st.error(f"인덱스 파일 읽기 오류: {e}")
+
+        if st.session_state['index_group_df'] is not None:
+            up_at = st.session_state['index_uploaded_at']
+            st.success(f"✅ 현재 적용 중인 인덱스: **{st.session_state['index_filename']}** "
+                       f"({up_at.strftime('%Y-%m-%d %H:%M')})")
+            g_n = len(st.session_state['index_group_df'])
+            c_n = len(st.session_state['index_creative_df']) \
+                if st.session_state['index_creative_df'] is not None else 0
+            st.caption(f"그룹 시트 {g_n}건 · 소재 시트 {c_n}건")
+        else:
+            st.info("적용된 인덱스가 없습니다. 업로드하면 자동 저장됩니다.")
+
+        st.caption("그룹 시트: 사업부구분 · Media · Campaign · Ad Group · 종료일\n\n"
+                   "업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
 
     st.divider()
-    run = st.button("🔄 가공 시작", type="primary", use_container_width=True)
 
-    if not run:
-        st.info("파일을 업로드한 후 **가공 시작** 버튼을 눌러주세요.")
-        return
+    # ── 개별 가공 버튼
+    b1, b2 = st.columns(2)
+    with b1:
+        run_media = st.button("📊 미디어 파일 가공", type="primary", use_container_width=True)
+    with b2:
+        run_cat = st.button("🛒 카테고리 파일 가공", type="primary", use_container_width=True)
 
-    if not media_file and not cat_file:
-        st.warning("미디어 파일 또는 카테고리 파일을 업로드해주세요.")
-        return
+    group_df = st.session_state['index_group_df']
+    lookup   = build_index_lookup(group_df)
 
-    # ── 파일 읽기
-    with st.spinner("파일 읽는 중..."):
-        try:
-            media_raw = read_csv_robust(media_file) if media_file else None
-            cat_raw   = read_csv_robust(cat_file)   if cat_file   else None
-            end_df    = pd.read_excel(end_file, header=0, engine='openpyxl') \
-                if end_file   else None
-        except Exception as e:
-            st.error(f"파일 읽기 오류: {e}")
-            return
-
-    # ── 컬럼 구조 기반 파일 종류 자동 판별/교정
-    # (파일명이 아닌 '카테고리 구매 unique' 컬럼 존재 여부로 판단)
-    media_kind = detect_file_kind(media_raw)
-    cat_kind   = detect_file_kind(cat_raw)
-
-    if media_kind == 'category' and cat_kind == 'media':
-        st.warning("⚠️ 업로드 위치가 바뀐 것을 감지하여 자동으로 교정했습니다: "
-                   f"'{media_file.name}' → 카테고리 파일, '{cat_file.name}' → 미디어 파일")
-        media_raw, cat_raw = cat_raw, media_raw
-    elif media_kind == 'category' and cat_raw is None:
-        st.warning(f"⚠️ '{media_file.name}'은(는) 카테고리 파일 컬럼 구조로 감지되어 "
-                   "카테고리 파일로 처리합니다.")
-        cat_raw, media_raw = media_raw, None
-    elif cat_kind == 'media' and media_raw is None:
-        st.warning(f"⚠️ '{cat_file.name}'은(는) 미디어 파일 컬럼 구조로 감지되어 "
-                   "미디어 파일로 처리합니다.")
-        media_raw, cat_raw = cat_raw, None
-
-    if media_raw is not None and media_raw.shape[1] not in (len(MEDIA_COLUMNS),):
-        st.info(f"ℹ️ 미디어 파일 컬럼 수({media_raw.shape[1]})가 예상({len(MEDIA_COLUMNS)}개)과 "
-                "다릅니다. 컬럼 구조를 확인해주세요.")
-    if cat_raw is not None and cat_raw.shape[1] not in (len(CATEGORY_COLUMNS),):
-        st.info(f"ℹ️ 카테고리 파일 컬럼 수({cat_raw.shape[1]})가 예상({len(CATEGORY_COLUMNS)}개)과 "
-                "다릅니다. 컬럼 구조를 확인해주세요.")
-
-    # ── 가공
-    media_df = media_d4_7 = cat_df = cat_manual = None
-
-    if media_raw is not None:
-        with st.spinner("미디어 데이터 가공 중..."):
+    # ────────────────────────────── 미디어 가공 ──────────────────────────────
+    if run_media:
+        if not media_file:
+            st.warning("미디어 파일을 업로드해주세요.")
+        else:
             try:
-                media_df, media_d4_7 = process_media(media_raw, end_df, yesterday)
-            except Exception:
-                st.error("미디어 처리 오류:\n```\n" + traceback.format_exc() + "\n```")
+                media_raw = read_csv_robust(media_file)
+            except Exception as e:
+                st.error(f"파일 읽기 오류: {e}")
+                media_raw = None
 
-    if cat_raw is not None:
-        with st.spinner("카테고리 데이터 가공 중..."):
+            if media_raw is not None:
+                if detect_file_kind(media_raw) == 'category':
+                    st.warning(f"⚠️ '{media_file.name}'은(는) 카테고리 파일 컬럼 구조로 보입니다. "
+                               "카테고리 파일 업로드란에 올린 뒤 카테고리 가공 버튼을 사용해주세요.")
+                else:
+                    if media_raw.shape[1] != len(MEDIA_COLUMNS):
+                        st.info(f"ℹ️ 미디어 파일 컬럼 수({media_raw.shape[1]})가 예상"
+                                f"({len(MEDIA_COLUMNS)}개)과 다릅니다. 컬럼 구조를 확인해주세요.")
+                    with st.spinner("미디어 데이터 가공 중..."):
+                        try:
+                            m_df, m_d47 = process_media(media_raw, yesterday)
+                            if m_df is not None:
+                                date_col = m_df.columns[M_DATE]
+                                camp_col = m_df.columns[M_CAMP]
+                                adg_col  = m_df.columns[M_ADG]
+                                if lookup:
+                                    m_df = add_index_columns(m_df, lookup, camp_col, adg_col, date_col)
+                                else:
+                                    st.info("ℹ️ 적용된 인덱스가 없어 사업부구분(인덱스)/D7_상태 열은 "
+                                            "추가되지 않았습니다.")
+                                st.session_state['media_df']   = m_df
+                                st.session_state['media_d4_7'] = m_d47
+                        except Exception:
+                            st.error("미디어 처리 오류:\n```\n" + traceback.format_exc() + "\n```")
+
+    # ────────────────────────────── 카테고리 가공 ────────────────────────────
+    if run_cat:
+        if not cat_file:
+            st.warning("카테고리 파일을 업로드해주세요.")
+        else:
             try:
-                cat_df, cat_manual = process_category(cat_raw, end_df, yesterday)
-            except Exception:
-                st.error("카테고리 처리 오류:\n```\n" + traceback.format_exc() + "\n```")
+                cat_raw = read_csv_robust(cat_file)
+            except Exception as e:
+                st.error(f"파일 읽기 오류: {e}")
+                cat_raw = None
+
+            if cat_raw is not None:
+                if detect_file_kind(cat_raw) == 'media':
+                    st.warning(f"⚠️ '{cat_file.name}'은(는) 미디어 파일 컬럼 구조로 보입니다. "
+                               "미디어 파일 업로드란에 올린 뒤 미디어 가공 버튼을 사용해주세요.")
+                else:
+                    if cat_raw.shape[1] != len(CATEGORY_COLUMNS):
+                        st.info(f"ℹ️ 카테고리 파일 컬럼 수({cat_raw.shape[1]})가 예상"
+                                f"({len(CATEGORY_COLUMNS)}개)과 다릅니다. 컬럼 구조를 확인해주세요.")
+                    if not lookup:
+                        st.warning("⚠️ 적용된 인덱스가 없어 사업부구분을 판별할 수 없습니다. "
+                                   "카테고리_unique/qty/price가 모두 '카테고리 구매' 총계로 대체되고 "
+                                   "전체 행이 수기 확인 대상으로 표시됩니다. 인덱스 파일을 먼저 업로드해주세요.")
+                    with st.spinner("카테고리 데이터 가공 중..."):
+                        try:
+                            c_df, c_manual = process_category(cat_raw, yesterday, lookup)
+                            st.session_state['cat_df']     = c_df
+                            st.session_state['cat_manual'] = c_manual
+                        except Exception:
+                            st.error("카테고리 처리 오류:\n```\n" + traceback.format_exc() + "\n```")
+
+    if not run_media and not run_cat and st.session_state['media_df'] is None \
+            and st.session_state['cat_df'] is None:
+        st.info("파일을 업로드한 후 원하는 가공 버튼을 눌러주세요.")
+
+    media_df   = st.session_state['media_df']
+    media_d4_7 = st.session_state['media_d4_7']
+    cat_df     = st.session_state['cat_df']
+    cat_manual = st.session_state['cat_manual']
 
     st.divider()
 
@@ -453,12 +567,13 @@ def main():
         m2.metric("1~3일치 (전체 열)",  len(media_df) - n_d4_7)
         m3.metric("4~7일치 (BL열만 유효)", n_d4_7)
 
-        # 미리보기: 식별자 열(A~H) + BL열
-        show = list(media_df.columns[:min(8, len(media_df.columns))])
-        if M_BL < len(media_df.columns) and media_df.columns[M_BL] not in show:
-            show.append(media_df.columns[M_BL])
+        # 미리보기: 인덱스 열 + 식별자 열(Date~ad) + 집약형(Adef)열
+        id_cols = [c for c in ['사업부구분(인덱스)', 'D7_상태'] if c in media_df.columns]
+        id_cols += [c for c in MEDIA_COLUMNS[:8] if c in media_df.columns]
+        if M_BL_NAME in media_df.columns and M_BL_NAME not in id_cols:
+            id_cols.append(M_BL_NAME)
 
-        preview   = media_df[show].copy()
+        preview   = media_df[id_cols].copy()
         mask_prev = media_d4_7[:len(preview)] if media_d4_7 is not None else None
 
         st.dataframe(
@@ -492,33 +607,6 @@ def main():
                 manual_rows = cat_df[cat_manual.astype(bool)].copy() if cat_manual is not None else pd.DataFrame()
                 st.dataframe(manual_rows, use_container_width=True)
 
-    # ────────────────────────────── 캠페인 종료일 ────────────────────────────
-    if end_df is not None and not end_df.empty:
-        st.subheader("📅 캠페인 종료일")
-
-        ec       = end_df.columns.tolist()
-        date_ec  = ec[2] if len(ec) >= 3 else ec[-1]
-        ed       = end_df.copy()
-        ed[date_ec] = pd.to_datetime(ed[date_ec], errors='coerce')
-
-        delta = (ed[date_ec] - yesterday).dt.days
-        ended  = (delta < 0).values
-        soon   = ((delta >= 0) & (delta <= 3)).values
-
-        color_arr = np.where(ended, '#F8D7DA', np.where(soon, '#FFF3CD', ''))
-
-        def _end_style(x):
-            bg = pd.DataFrame('', index=x.index, columns=x.columns)
-            for i, color in enumerate(color_arr):
-                if color and i < len(x):
-                    bg.iloc[i] = f'background-color: {color}'
-            return bg
-
-        st.dataframe(ed.style.apply(_end_style, axis=None), use_container_width=True)
-        st.caption(f"🔴 이미 종료 ({int(ended.sum())}개)  |  "
-                   f"🟡 3일 이내 종료 예정 ({int(soon.sum())}개)  |  "
-                   f"⬜ 정상 운영 중")
-
     # ────────────────────────────── 다운로드 ─────────────────────────────────
     st.divider()
     has_output = (media_df is not None and not media_df.empty) or \
@@ -527,7 +615,7 @@ def main():
     if has_output:
         st.subheader("💾 가공 데이터 다운로드")
         fname       = f"NPS_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        excel_bytes = build_excel(media_df, cat_df, end_df)
+        excel_bytes = build_excel(media_df, cat_df)
 
         st.download_button(
             "📥 엑셀 다운로드",
@@ -544,8 +632,6 @@ def main():
         if cat_df is not None and not cat_df.empty:
             sheets.append("**카테고리_RD붙여넣기**: RD 시트 BU~BW 붙여넣기용")
             sheets.append("**카테고리_전체**: 수기확인 플래그 포함 전체 데이터")
-        if end_df is not None and not end_df.empty:
-            sheets.append("**캠페인종료일**: 업로드된 종료일 원본")
 
         st.info("시트 구성  |  " + "  |  ".join(sheets))
     else:

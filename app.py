@@ -332,45 +332,33 @@ def process_media(raw):
 # Category processing
 # ──────────────────────────────────────────────────────────────────────────────
 
-def process_category(raw, group_lookup, creative_lookup):
-    """
-    Returns (result_df, needs_manual_bool_array).
-
-    출력 열 구조:
-      그룹_D7초과여부, 소재_D7초과여부, <원본 Date~소구점 69열, 순서 그대로>,
-      사업부구분, 여백(빈값), 피드구분(빈값), <카테고리 구매 unique ~ 노크잇 price 48열>
-    카테고리 구매 unique/quantity/price 3열의 값만 사업부구분 매핑값으로 치환하고,
-    나머지 45열(패션·뷰티·...·노크잇)은 원본 값 그대로 유지한다.
-
-    사업부구분은 카테고리 파일 자체에는 없고(BR열은 '카테고리 구매 unique' 수치 데이터)
-    인덱스 그룹 시트(Campaign+Ad Group 매칭)에서만 가져온다. 매칭되지 않는 행도 삭제하지 않고
-    그대로 유지하며 '#인덱스추가'로 표시한다.
-    """
+def process_category_step1(raw):
+    """1단계: 날짜 파싱/정렬 (컬럼 구조 검증은 호출부에서 처리). 원본 데이터 열은 그대로 유지.
+    A열(날짜)을 찾을 수 없거나 인식 가능한 행이 하나도 없으면 ValueError를 낸다."""
     df = raw.copy()
     date_col = safe_col(df, C_DATE)
     if not date_col:
-        st.error("카테고리 파일: A열(날짜)를 찾을 수 없습니다.")
-        return pd.DataFrame(), np.array([], dtype=bool)
+        raise ValueError("A열(날짜)를 찾을 수 없습니다.")
 
     df[date_col] = parse_flexible_dates(df[date_col])
     df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
 
     if df.empty:
-        st.warning("카테고리 파일: A열(날짜)을 인식할 수 있는 행이 없습니다. 날짜 형식을 확인해주세요.")
-        return pd.DataFrame(), np.array([], dtype=bool)
+        raise ValueError("A열(날짜)을 인식할 수 있는 행이 없습니다. 날짜 형식을 확인해주세요.")
 
-    n            = len(df)
-    manual       = np.zeros(n, bool)
-    biz_list     = np.full(n, '', object)
-    group_status = np.full(n, '', object)
-    creative_status = np.full(n, '', object)
+    return df
 
-    generic_u, generic_q, generic_p = GENERIC_CATEGORY_COLS
-    # object dtype으로 복사 — pandas 3.x의 엄격한 dtype(예: string[pyarrow])에 다른 타입 값을
-    # 대입할 때 발생하는 TypeError를 피하기 위함(앞서 4~7일치 0-처리에서 겪은 문제와 동일한 원인).
-    out_u = df[generic_u].astype(object).copy() if generic_u in df.columns else pd.Series([np.nan] * n, dtype=object)
-    out_q = df[generic_q].astype(object).copy() if generic_q in df.columns else pd.Series([np.nan] * n, dtype=object)
-    out_p = df[generic_p].astype(object).copy() if generic_p in df.columns else pd.Series([np.nan] * n, dtype=object)
+
+def process_category_step2(df, group_lookup, creative_lookup):
+    """2단계: 인덱스 매칭 — 사업부구분(그룹 시트 Campaign+Ad Group), 그룹_D7초과여부(그룹 시트
+    종료일+7일), 소재_D7초과여부(소재 시트 Campaign+Ad Group+Ad)를 계산한다. 매칭되지 않는
+    행도 삭제하지 않고 '#인덱스추가'로 표시한다.
+    Returns (biz_list, group_status, creative_status) — 모두 len(df) 크기의 object 배열.
+    """
+    n = len(df)
+    biz_list         = np.full(n, '', object)
+    group_status     = np.full(n, '', object)
+    creative_status  = np.full(n, '', object)
 
     for pos, (_, row) in enumerate(df.iterrows()):
         camp     = str(row_val(row, C_CAMP, '')).strip()
@@ -382,12 +370,10 @@ def process_category(raw, group_lookup, creative_lookup):
         if gmatch is None:
             biz_list[pos]     = INDEX_MISSING_MARK
             group_status[pos] = INDEX_MISSING_MARK
-            biz_str = ''
         else:
             biz_val, g_end = gmatch
             biz_list[pos]     = biz_val if pd.notna(biz_val) else INDEX_MISSING_MARK
             group_status[pos] = d7_status(row_date, g_end)
-            biz_str = str(biz_val).strip() if pd.notna(biz_val) else ''
 
         c_end = creative_lookup.get((camp, adg, ad))
         if c_end is not None:
@@ -396,6 +382,31 @@ def process_category(raw, group_lookup, creative_lookup):
             creative_status[pos] = '그룹기준적용'
         else:
             creative_status[pos] = INDEX_MISSING_MARK
+
+    return biz_list, group_status, creative_status
+
+
+def process_category_step3(df, biz_list):
+    """3단계: 사업부구분(2단계 결과) 기준 카테고리 값 매핑 — 카테고리 구매 unique/quantity/price
+    3열의 값만 실제 카테고리 그룹 열(예: '가구 unique/quantity/price')의 값으로 치환하고,
+    나머지 45열(패션·뷰티·...·노크잇)은 원본 값 그대로 둔다. 매핑 실패(사업부구분 미매핑,
+    사업부-연합의 USP 미매핑, 인덱스 자체 미매칭)는 원본 총계 값을 그대로 두고 수기확인
+    플래그만 세운다.
+    Returns (df, manual_bool_array).
+    """
+    n      = len(df)
+    manual = np.zeros(n, bool)
+
+    generic_u, generic_q, generic_p = GENERIC_CATEGORY_COLS
+    # object dtype으로 복사 — pandas 3.x의 엄격한 dtype(예: string[pyarrow])에 다른 타입 값을
+    # 대입할 때 발생하는 TypeError를 피하기 위함(앞서 4~7일치 0-처리에서 겪은 문제와 동일한 원인).
+    out_u = df[generic_u].astype(object).copy() if generic_u in df.columns else pd.Series([np.nan] * n, dtype=object)
+    out_q = df[generic_q].astype(object).copy() if generic_q in df.columns else pd.Series([np.nan] * n, dtype=object)
+    out_p = df[generic_p].astype(object).copy() if generic_p in df.columns else pd.Series([np.nan] * n, dtype=object)
+
+    for pos, (_, row) in enumerate(df.iterrows()):
+        biz = biz_list[pos]
+        biz_str = str(biz).strip() if biz not in ('', None) and biz != INDEX_MISSING_MARK else ''
 
         group_name = None
         if biz_str == '사업부-연합':
@@ -422,7 +433,13 @@ def process_category(raw, group_lookup, creative_lookup):
         df[generic_q] = out_q
         df[generic_p] = out_p
 
-    # 소구점 다음에 사업부구분 / 여백(빈값) / 피드구분(빈값) 삽입
+    return df, manual
+
+
+def process_category_finalize(df, biz_list, group_status, creative_status):
+    """열 순서 재배치 — 소구점 다음에 사업부구분/여백(빈값)/피드구분(빈값) 삽입,
+    맨 앞에 그룹_D7초과여부/소재_D7초과여부 삽입. 원본 데이터 열 순서는 그대로 유지."""
+    df = df.copy()
     if '소구점' in df.columns:
         pos_after = df.columns.get_loc('소구점') + 1
         df.insert(pos_after, '사업부구분', biz_list)
@@ -433,35 +450,14 @@ def process_category(raw, group_lookup, creative_lookup):
         df['여백'] = ''
         df['피드구분'] = ''
 
-    # 맨 앞 2열: 그룹_D7초과여부 / 소재_D7초과여부
     df.insert(0, '소재_D7초과여부', creative_status)
     df.insert(0, '그룹_D7초과여부', group_status)
-
-    return df, manual
+    return df
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 화면 표시 전 Arrow 직렬화 안전화
 # ──────────────────────────────────────────────────────────────────────────────
-
-def arrow_safe_preview(df):
-    """st.dataframe()은 내부적으로 PyArrow로 직렬화하는데, object 열 안에 서로 다른
-    파이썬 타입(예: int와 str)이 섞여 있으면 ArrowTypeError로 앱 전체가 죽는다
-    (예: 카테고리 구매 unique 열이 미매칭 행은 원본 숫자값, 매칭된 행은 다른 카테고리
-    그룹 열의 문자열값으로 채워지는 경우).
-
-    이전에는 타입이 섞인 열만 골라 .astype(str)로 변환했는데, .astype(str)은 NaN을
-    문자열 "nan"으로 바꾸지 않고 float NaN 그대로 남겨두는 경우가 있어 — 예를 들어
-    int/str이 섞인 열을 고쳐도 str/float(NaN)이 섞인 채로 남아 ArrowTypeError가
-    똑같이 재발할 수 있다. 그래서 열 종류를 가리지 않고 **모든 열의 모든 값**을
-    결측치는 빈 문자열로, 나머지는 str()로 일괄 변환해 항상 순수 문자열 열이 되도록
-    보장한다. 화면 표시용 복사본에만 적용되며, 엑셀 다운로드용 원본 데이터는
-    그대로 유지되어 영향 없다."""
-    out = df.copy()
-    for col in out.columns:
-        out[col] = out[col].map(lambda v: '' if pd.isna(v) else str(v))
-    return out
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Excel export builder
@@ -504,12 +500,107 @@ def _init_session_state():
         'index_creative_df':  None,
         'index_filename':     None,
         'index_uploaded_at':  None,
-        'media_df':           None,
-        'cat_df':             None,
-        'cat_manual':         None,
+        'media_log':          None,
+        'cat_log':            None,
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 가공 내역(단계별 진행 상태) 패널
+# ──────────────────────────────────────────────────────────────────────────────
+
+MEDIA_STEP_LABELS = [
+    'CSV 파일 읽기 및 컬럼 구조 검증',
+    '인덱스 매칭 — 사업부구분 / D7 판정',
+    '엑셀 파일 생성',
+]
+CATEGORY_STEP_LABELS = [
+    'CSV 파일 읽기 및 컬럼 구조 검증',
+    '인덱스 매칭 — 사업부구분 / D7 판정',
+    '카테고리 값 매핑 (사업부구분 기준)',
+    '엑셀 파일 생성',
+]
+
+STATUS_BADGE = {
+    'done':    ('완료',   'green', '✅'),
+    'error':   ('오류',   'red',   '❌'),
+    'pending': ('대기',   'gray',  '⚪'),
+    'running': ('진행중', 'blue',  '🔵'),
+}
+
+
+def _new_run_log(step_labels):
+    return {
+        'steps':       [{'label': s, 'status': 'pending', 'detail': None} for s in step_labels],
+        'rows':        None,
+        'excel_bytes': None,
+        'excel_fname': None,
+    }
+
+
+def render_run_log(icon, title, log, key_prefix):
+    """가공 내역 패널: 제목 행(제목 + 행수 + 진행률 + 다운로드 버튼) + 단계별 상태 리스트.
+    다운로드 버튼은 가공 완료 전엔 회색 비활성화, 완료 후엔 초록색 활성화로 표시한다
+    (Streamlit의 기본 type="primary"는 앱 테마색(빨강)이라 st.container(key=)로 감싸서
+    CSS를 직접 덮어씌운다)."""
+    steps       = log['steps']
+    total       = len(steps)
+    done_n      = sum(1 for s in steps if s['status'] == 'done')
+    has_error   = any(s['status'] == 'error' for s in steps)
+    progress    = done_n / total if total else 0.0
+    can_download = bool(log['excel_bytes']) and not has_error
+
+    wrap_key = f"{key_prefix}_dl_wrap"
+    st.markdown(f"""
+        <style>
+        .st-key-{wrap_key} button:disabled {{
+            background-color: #e5e7eb !important;
+            color: #9ca3af !important;
+            border-color: #e5e7eb !important;
+        }}
+        .st-key-{wrap_key} button:not(:disabled) {{
+            background-color: #16a34a !important;
+            color: white !important;
+            border-color: #16a34a !important;
+        }}
+        </style>
+    """, unsafe_allow_html=True)
+
+    head_l, head_r = st.columns([2, 3], vertical_alignment="center")
+    with head_l:
+        st.markdown(f"#### {icon} {title}")
+    with head_r:
+        c1, c2, c3 = st.columns([1, 2, 1.6], vertical_alignment="center")
+        with c1:
+            st.metric("행 수", log['rows'] if log['rows'] is not None else '-')
+        with c2:
+            st.progress(progress, text=f"{int(progress * 100)}%")
+        with c3:
+            with st.container(key=wrap_key):
+                st.download_button(
+                    "📥 다운로드",
+                    data=log['excel_bytes'] or b'',
+                    file_name=log['excel_fname'] or 'download.xlsx',
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    disabled=not can_download,
+                    use_container_width=True,
+                    key=f"{key_prefix}_dl_btn",
+                )
+
+    for s in steps:
+        label, color, badge_icon = STATUS_BADGE[s['status']]
+        col1, col2, col3 = st.columns([0.4, 3.6, 1], vertical_alignment="center")
+        with col1:
+            st.markdown(f"### {badge_icon}")
+        with col2:
+            st.write(s['label'])
+            if s['detail']:
+                st.caption(f":red[{s['detail']}]" if s['status'] == 'error' else s['detail'])
+        with col3:
+            st.badge(label, color=color)
 
 
 def main():
@@ -602,147 +693,150 @@ def main():
         if not media_file:
             st.warning("미디어 파일을 업로드해주세요.")
         else:
+            log = _new_run_log(MEDIA_STEP_LABELS)
+
+            # 1단계: CSV 파일 읽기 및 컬럼 구조 검증
+            m_df = None
             try:
                 media_raw = read_csv_robust(media_file)
-            except Exception as e:
-                st.error(f"파일 읽기 오류: {e}")
-                media_raw = None
-
-            if media_raw is not None:
                 if detect_file_kind(media_raw) == 'category':
-                    st.warning(f"⚠️ '{media_file.name}'은(는) 카테고리 파일 컬럼 구조로 보입니다. "
-                               "카테고리 파일 업로드란에 올린 뒤 카테고리 가공 버튼을 사용해주세요.")
-                else:
-                    if media_raw.shape[1] != len(MEDIA_COLUMNS):
-                        st.info(f"ℹ️ 미디어 파일 컬럼 수({media_raw.shape[1]})가 예상"
-                                f"({len(MEDIA_COLUMNS)}개)과 다릅니다. 컬럼 구조를 확인해주세요.")
-                    with st.spinner("미디어 데이터 가공 중..."):
-                        try:
-                            m_df = process_media(media_raw)
-                            if not m_df.empty:
-                                date_col = m_df.columns[M_DATE]
-                                camp_col = m_df.columns[M_CAMP]
-                                adg_col  = m_df.columns[M_ADG]
-                                ad_col   = m_df.columns[M_AD]
-                                m_df = add_index_columns(
-                                    m_df, group_lookup, creative_lookup,
-                                    camp_col, adg_col, ad_col, date_col
-                                )
-                            st.session_state['media_df'] = m_df
-                        except Exception:
-                            st.error("미디어 처리 오류:\n```\n" + traceback.format_exc() + "\n```")
+                    raise ValueError(
+                        f"'{media_file.name}'은(는) 카테고리 파일 컬럼 구조로 보입니다. "
+                        "카테고리 파일 업로드란에 올린 뒤 카테고리 가공 버튼을 사용해주세요."
+                    )
+                col_note = None
+                if media_raw.shape[1] != len(MEDIA_COLUMNS):
+                    col_note = (f"컬럼 수({media_raw.shape[1]})가 예상({len(MEDIA_COLUMNS)}개)과 "
+                                "다릅니다. 컬럼 구조를 확인해주세요.")
+                m_df = process_media(media_raw)
+                if m_df.empty:
+                    raise ValueError("A열(날짜)을 인식할 수 있는 행이 없습니다. 날짜 형식을 확인해주세요.")
+                log['steps'][0]['status'] = 'done'
+                log['steps'][0]['detail'] = col_note
+            except Exception as e:
+                log['steps'][0]['status'] = 'error'
+                log['steps'][0]['detail'] = str(e)
+                m_df = None
+
+            # 2단계: 인덱스 매칭 — 사업부구분 / D7 판정
+            if log['steps'][0]['status'] == 'done':
+                try:
+                    date_col = m_df.columns[M_DATE]
+                    camp_col = m_df.columns[M_CAMP]
+                    adg_col  = m_df.columns[M_ADG]
+                    ad_col   = m_df.columns[M_AD]
+                    m_df = add_index_columns(
+                        m_df, group_lookup, creative_lookup,
+                        camp_col, adg_col, ad_col, date_col
+                    )
+                    n_missing = int((m_df['사업부구분'] == INDEX_MISSING_MARK).sum())
+                    log['steps'][1]['status'] = 'done'
+                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing}건" if n_missing else "전체 매칭 완료"
+                    log['rows'] = len(m_df)
+                except Exception:
+                    log['steps'][1]['status'] = 'error'
+                    log['steps'][1]['detail'] = traceback.format_exc()
+
+            # 3단계: 엑셀 파일 생성
+            if log['steps'][1]['status'] == 'done':
+                try:
+                    log['excel_bytes'] = build_media_excel(m_df)
+                    log['excel_fname'] = f"미디어_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['steps'][2]['status'] = 'done'
+                except Exception:
+                    log['steps'][2]['status'] = 'error'
+                    log['steps'][2]['detail'] = traceback.format_exc()
+
+            st.session_state['media_log'] = log
 
     # ────────────────────────────── 카테고리 가공 ────────────────────────────
     if run_cat:
         if not cat_file:
             st.warning("카테고리 파일을 업로드해주세요.")
         else:
+            log = _new_run_log(CATEGORY_STEP_LABELS)
+
+            if not group_lookup:
+                st.warning("⚠️ 적용된 인덱스가 없어 사업부구분을 판별할 수 없습니다. "
+                           "전체 행이 '#인덱스추가'로 표시되고 카테고리 구매 unique/quantity/price는 "
+                           "원본 총계 값 그대로 유지됩니다. 인덱스 파일을 먼저 업로드해주세요.")
+
+            # 1단계: CSV 파일 읽기 및 컬럼 구조 검증
+            df1 = None
             try:
                 cat_raw = read_csv_robust(cat_file)
-            except Exception as e:
-                st.error(f"파일 읽기 오류: {e}")
-                cat_raw = None
-
-            if cat_raw is not None:
                 if detect_file_kind(cat_raw) == 'media':
-                    st.warning(f"⚠️ '{cat_file.name}'은(는) 미디어 파일 컬럼 구조로 보입니다. "
-                               "미디어 파일 업로드란에 올린 뒤 미디어 가공 버튼을 사용해주세요.")
-                else:
-                    if cat_raw.shape[1] != len(CATEGORY_COLUMNS):
-                        st.info(f"ℹ️ 카테고리 파일 컬럼 수({cat_raw.shape[1]})가 예상"
-                                f"({len(CATEGORY_COLUMNS)}개)과 다릅니다. 컬럼 구조를 확인해주세요.")
-                    if not group_lookup:
-                        st.warning("⚠️ 적용된 인덱스가 없어 사업부구분을 판별할 수 없습니다. "
-                                   "전체 행이 '#인덱스추가'로 표시되고 카테고리 구매 unique/quantity/price는 "
-                                   "원본 총계 값 그대로 유지됩니다. 인덱스 파일을 먼저 업로드해주세요.")
-                    with st.spinner("카테고리 데이터 가공 중..."):
-                        try:
-                            c_df, c_manual = process_category(cat_raw, group_lookup, creative_lookup)
-                            st.session_state['cat_df']     = c_df
-                            st.session_state['cat_manual'] = c_manual
-                        except Exception:
-                            st.error("카테고리 처리 오류:\n```\n" + traceback.format_exc() + "\n```")
+                    raise ValueError(
+                        f"'{cat_file.name}'은(는) 미디어 파일 컬럼 구조로 보입니다. "
+                        "미디어 파일 업로드란에 올린 뒤 미디어 가공 버튼을 사용해주세요."
+                    )
+                col_note = None
+                if cat_raw.shape[1] != len(CATEGORY_COLUMNS):
+                    col_note = (f"컬럼 수({cat_raw.shape[1]})가 예상({len(CATEGORY_COLUMNS)}개)과 "
+                                "다릅니다. 컬럼 구조를 확인해주세요.")
+                df1 = process_category_step1(cat_raw)
+                log['steps'][0]['status'] = 'done'
+                log['steps'][0]['detail'] = col_note
+            except Exception as e:
+                log['steps'][0]['status'] = 'error'
+                log['steps'][0]['detail'] = str(e)
+                df1 = None
 
-    if not run_media and not run_cat and st.session_state['media_df'] is None \
-            and st.session_state['cat_df'] is None:
+            # 2단계: 인덱스 매칭 — 사업부구분 / D7 판정
+            biz_list = group_status = creative_status = None
+            if log['steps'][0]['status'] == 'done':
+                try:
+                    biz_list, group_status, creative_status = process_category_step2(
+                        df1, group_lookup, creative_lookup
+                    )
+                    n_missing = int((biz_list == INDEX_MISSING_MARK).sum())
+                    log['steps'][1]['status'] = 'done'
+                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing}건" if n_missing else "전체 매칭 완료"
+                except Exception:
+                    log['steps'][1]['status'] = 'error'
+                    log['steps'][1]['detail'] = traceback.format_exc()
+
+            # 3단계: 카테고리 값 매핑 (사업부구분 기준)
+            df2 = None
+            if log['steps'][1]['status'] == 'done':
+                try:
+                    df2, manual = process_category_step3(df1, biz_list)
+                    n_manual = int(manual.sum())
+                    log['steps'][2]['status'] = 'done'
+                    log['steps'][2]['detail'] = f"수기확인 필요 {n_manual}건" if n_manual else "전체 매핑 완료"
+                except Exception:
+                    log['steps'][2]['status'] = 'error'
+                    log['steps'][2]['detail'] = traceback.format_exc()
+
+            # 4단계: 엑셀 파일 생성
+            if log['steps'][2]['status'] == 'done':
+                try:
+                    final_df = process_category_finalize(df2, biz_list, group_status, creative_status)
+                    log['rows'] = len(final_df)
+                    log['excel_bytes'] = build_category_excel(final_df)
+                    log['excel_fname'] = f"카테고리_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['steps'][3]['status'] = 'done'
+                except Exception:
+                    log['steps'][3]['status'] = 'error'
+                    log['steps'][3]['detail'] = traceback.format_exc()
+
+            st.session_state['cat_log'] = log
+
+    media_log = st.session_state['media_log']
+    cat_log   = st.session_state['cat_log']
+
+    if media_log is None and cat_log is None:
         st.info("파일을 업로드한 후 각 섹션의 버튼을 눌러주세요.")
 
-    media_df   = st.session_state['media_df']
-    cat_df     = st.session_state['cat_df']
-    cat_manual = st.session_state['cat_manual']
-
     st.divider()
 
-    # ────────────────────────────── 미디어 결과 ──────────────────────────────
-    if media_df is not None and not media_df.empty:
-        st.subheader("📊 미디어 가공 결과")
-        st.metric("전체 행", len(media_df))
-
-        # 미리보기: 인덱스 열(그룹/소재 D7) + 식별자 열(Date~ad) + 맨 끝 사업부구분
-        id_cols = [c for c in ['그룹_D7초과여부', '소재_D7초과여부'] if c in media_df.columns]
-        id_cols += [c for c in MEDIA_COLUMNS[:8] if c in media_df.columns]
-        id_cols += [c for c in ['사업부구분'] if c in media_df.columns]
-
-        preview = media_df[id_cols].copy()
-
-        st.dataframe(arrow_safe_preview(preview), use_container_width=True, height=320)
-        st.caption("업로드된 모든 날짜의 데이터가 그대로 가공됩니다 | 전체 열은 다운로드 파일에 포함됩니다.")
-
-    # ────────────────────────────── 카테고리 결과 ────────────────────────────
-    if cat_df is not None and not cat_df.empty:
-        st.subheader("🛒 카테고리 가공 결과")
-
-        n_m = int(cat_manual.sum()) if cat_manual is not None else 0
-        if n_m:
-            st.warning(f"⚠️ 수기 확인 필요: **{n_m}개 행** — "
-                       "인덱스 미매칭(#인덱스추가) 또는 사업부-연합의 USP Category 미매핑")
-        else:
-            st.success("모든 행이 정상 매핑되었습니다.")
-
-        # fillna('') 후 astype(str) — astype(str) 단독으로는 NaN이 float로 남아
-        # 다른 문자열 값과 섞인 채로 유지되어 ArrowTypeError가 재발하므로, 결측치를
-        # 먼저 빈 문자열로 채운 뒤 전체를 문자열로 변환해 완전히 균일한 타입으로 만든다.
-        cat_df_display = cat_df.fillna('').astype(str)
-        st.dataframe(cat_df_display, use_container_width=True, height=320)
-
-        # 수기 확인 필요 행 별도 표시
-        if n_m:
-            with st.expander(f"🔍 수기 확인 필요 항목 ({n_m}개) 자세히 보기"):
-                manual_rows = cat_df[cat_manual.astype(bool)].copy() if cat_manual is not None else pd.DataFrame()
-                st.dataframe(manual_rows.fillna('').astype(str), use_container_width=True)
-
-    # ────────────────────────────── 다운로드 ─────────────────────────────────
-    st.divider()
-    has_media_output = media_df is not None and not media_df.empty
-    has_cat_output    = cat_df   is not None and not cat_df.empty
-
-    if has_media_output or has_cat_output:
-        st.subheader("💾 가공 데이터 다운로드")
-        ts = pd.Timestamp.now().strftime('%Y%m%d_%H%M')
-
-        d1, d2 = st.columns(2)
-        with d1:
-            if has_media_output:
-                st.download_button(
-                    "📥 미디어 엑셀 다운로드",
-                    data=build_media_excel(media_df),
-                    file_name=f"미디어_가공_{ts}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True,
-                )
-        with d2:
-            if has_cat_output:
-                st.download_button(
-                    "📥 카테고리 엑셀 다운로드",
-                    data=build_category_excel(cat_df),
-                    file_name=f"카테고리_가공_{ts}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True,
-                )
-    else:
-        st.info("가공된 데이터가 없습니다. 파일을 확인 후 다시 시도해주세요.")
+    # ────────────────────────────── 가공 내역 ────────────────────────────────
+    if media_log is not None:
+        render_run_log("📊", "미디어 가공 내역", media_log, key_prefix="media")
+    if cat_log is not None:
+        if media_log is not None:
+            st.divider()
+        render_run_log("🛒", "카테고리 가공 내역", cat_log, key_prefix="cat")
 
 
 if __name__ == "__main__":

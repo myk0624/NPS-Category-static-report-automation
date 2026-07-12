@@ -549,8 +549,15 @@ def render_run_log(icon, title, log, key_prefix):
 
     같은 스크립트 실행 안에서 이 함수가 여러 번 호출되면(단계 진행에 따라 실시간으로
     다시 그릴 때) 컨테이너 key를 고정값으로 두면 Streamlit이 첫 호출 내용에서 갱신을
-    멈춰버린다(실측으로 확인된 동작) — 그래서 호출마다 log에 저장된 일련번호를 키에
-    붙여 매번 새로운 key를 사용한다."""
+    멈춰버린다(실측으로 확인된 동작) — 그래서 호출마다 새로운 key를 사용한다.
+
+    이 일련번호는 반드시 st.session_state에 저장해야 한다 — log 딕셔너리에 저장하면
+    (예: log['_seq']) 새 가공을 시작할 때마다 _new_run_log()가 완전히 새 log를 만들면서
+    번호가 다시 0부터 시작해, 이전 실행 때와 동일한 key가 재사용된다. 그 결과 이전 실행에서
+    렌더링된 단계별 상세 텍스트(예: 잘못된 파일 형식 오류 메시지)가 새 실행에서 그 텍스트를
+    다시 쓰지 않아도(caption을 호출 안 해도) 화면에 그대로 눌어붙어 있는 버그가 실측으로
+    확인됐다. session_state는 실행 간에도 유지되므로 여기 저장해야 매 호출이 진짜 유일한
+    key를 갖는다."""
     steps       = log['steps']
     total       = len(steps)
     done_n      = sum(1 for s in steps if s['status'] == 'done')
@@ -558,8 +565,9 @@ def render_run_log(icon, title, log, key_prefix):
     progress    = done_n / total if total else 0.0
     can_download = bool(log['excel_bytes']) and not has_error
 
-    seq = log.get('_seq', 0) + 1
-    log['_seq'] = seq
+    seq_state_key = f"_{key_prefix}_render_seq"
+    seq = st.session_state.get(seq_state_key, 0) + 1
+    st.session_state[seq_state_key] = seq
 
     panel_key = f"{key_prefix}_panel_{seq}"
     dl_key    = f"{key_prefix}_dl_wrap_{seq}"
@@ -627,8 +635,11 @@ def render_run_log(icon, title, log, key_prefix):
                     st.markdown(badge_icon)
                 with col2:
                     st.write(s['label'])
-                    if s['detail']:
-                        st.caption(f":red[{s['detail']}]" if s['status'] == 'error' else s['detail'])
+                    # detail 유무와 무관하게 매번 st.caption을 호출한다(빈 문자열이라도) — 조건부로
+                    # 호출을 건너뛰면 다음 실행에서 위젯 호출 순서/개수가 달라져 Streamlit이 이전
+                    # 실행의 캡션 내용을 새 컨테이너에 그대로 흘려보내는 현상이 실측으로 확인됨.
+                    detail_text = s['detail'] or ""
+                    st.caption(f":red[{detail_text}]" if s['status'] == 'error' and detail_text else detail_text)
                 with col3:
                     st.badge(label, color=color)
 
@@ -754,6 +765,7 @@ def main():
         if not media_file:
             st.warning("미디어 파일을 업로드해주세요.")
         else:
+            st.session_state['media_log'] = None  # 이전 가공(오류 포함) 내역 즉시 초기화
             log = _new_run_log(MEDIA_STEP_LABELS)
             _refresh_media(log)  # 버튼 클릭 즉시 전체 대기 상태로 먼저 표시
 
@@ -827,6 +839,7 @@ def main():
         if not cat_file:
             st.warning("카테고리 파일을 업로드해주세요.")
         else:
+            st.session_state['cat_log'] = None  # 이전 가공(오류 포함) 내역 즉시 초기화
             log = _new_run_log(CATEGORY_STEP_LABELS)
             _refresh_cat(log)  # 버튼 클릭 즉시 전체 대기 상태로 먼저 표시
 

@@ -4,6 +4,7 @@ import numpy as np
 from io import BytesIO
 import traceback
 import csv
+import time
 from openpyxl.styles import Font, PatternFill, Border
 
 
@@ -541,10 +542,15 @@ def _new_run_log(step_labels):
 
 
 def render_run_log(icon, title, log, key_prefix):
-    """가공 내역 패널: 제목 행(제목 + 행수 + 진행률 + 다운로드 버튼) + 단계별 상태 리스트.
-    다운로드 버튼은 가공 완료 전엔 회색 비활성화, 완료 후엔 초록색 활성화로 표시한다
-    (Streamlit의 기본 type="primary"는 앱 테마색(빨강)이라 st.container(key=)로 감싸서
-    CSS를 직접 덮어씌운다)."""
+    """가공 내역 패널: 제목 행(제목 + 진행률 + 다운로드 버튼) + 단계별 상태 리스트(라인 구분,
+    배경 없음). 다운로드 버튼은 가공 완료 전엔 회색 비활성화, 완료 후엔 초록색 활성화로
+    표시한다(Streamlit 기본 type="primary"는 앱 테마색(빨강)이라 st.container(key=)로 감싸서
+    CSS를 직접 덮어씌운다). 전체적으로 폰트를 줄이고 여백을 좁혀 compact하게 구성한다.
+
+    같은 스크립트 실행 안에서 이 함수가 여러 번 호출되면(단계 진행에 따라 실시간으로
+    다시 그릴 때) 컨테이너 key를 고정값으로 두면 Streamlit이 첫 호출 내용에서 갱신을
+    멈춰버린다(실측으로 확인된 동작) — 그래서 호출마다 log에 저장된 일련번호를 키에
+    붙여 매번 새로운 key를 사용한다."""
     steps       = log['steps']
     total       = len(steps)
     done_n      = sum(1 for s in steps if s['status'] == 'done')
@@ -552,55 +558,79 @@ def render_run_log(icon, title, log, key_prefix):
     progress    = done_n / total if total else 0.0
     can_download = bool(log['excel_bytes']) and not has_error
 
-    wrap_key = f"{key_prefix}_dl_wrap"
+    seq = log.get('_seq', 0) + 1
+    log['_seq'] = seq
+
+    panel_key = f"{key_prefix}_panel_{seq}"
+    dl_key    = f"{key_prefix}_dl_wrap_{seq}"
+    step_rules = "\n".join(
+        f".st-key-{key_prefix}_step_{i}_{seq} {{ border-bottom: 1px solid rgba(49,51,63,0.08); "
+        f"padding: 0.3rem 0; margin-bottom: 0; }}"
+        for i in range(total)
+    )
+
     st.markdown(f"""
         <style>
-        .st-key-{wrap_key} button:disabled {{
-            background-color: #e5e7eb !important;
-            color: #9ca3af !important;
-            border-color: #e5e7eb !important;
+        .st-key-{panel_key} {{ font-size: 0.85rem; }}
+        .st-key-{panel_key} h4 {{ font-size: 1rem; margin: 0; padding: 0; }}
+        .st-key-{panel_key} [data-testid="stCaptionContainer"] p {{ font-size: 0.78rem; }}
+        .st-key-{panel_key} [data-testid="stProgress"] {{ margin-top: 0.4rem; }}
+        .st-key-{panel_key} [data-testid="stProgressBar"] > div > div {{ height: 4px !important; }}
+        .st-key-{panel_key} span[data-testid="stBadge"] {{
+            font-size: 0.72rem !important;
+            padding: 0.05rem 0.5rem !important;
         }}
-        .st-key-{wrap_key} button:not(:disabled) {{
-            background-color: #16a34a !important;
-            color: white !important;
-            border-color: #16a34a !important;
+        {step_rules}
+        .st-key-{dl_key} button {{
+            padding: 0.25rem 0.75rem;
+            box-shadow: none;
+        }}
+        .st-key-{dl_key} button:disabled {{
+            background-color: #f1f5f9 !important;
+            color: #b0b8c1 !important;
+            border-color: #f1f5f9 !important;
+        }}
+        .st-key-{dl_key} button:not(:disabled) {{
+            background-color: #86efac !important;
+            color: #14532d !important;
+            border-color: #86efac !important;
         }}
         </style>
     """, unsafe_allow_html=True)
 
-    head_l, head_r = st.columns([2, 3], vertical_alignment="center")
-    with head_l:
-        st.markdown(f"#### {icon} {title}")
-    with head_r:
-        c1, c2, c3 = st.columns([1, 2, 1.6], vertical_alignment="center")
-        with c1:
-            st.metric("행 수", log['rows'] if log['rows'] is not None else '-')
-        with c2:
-            st.progress(progress, text=f"{int(progress * 100)}%")
-        with c3:
-            with st.container(key=wrap_key):
-                st.download_button(
-                    "📥 다운로드",
-                    data=log['excel_bytes'] or b'',
-                    file_name=log['excel_fname'] or 'download.xlsx',
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    disabled=not can_download,
-                    use_container_width=True,
-                    key=f"{key_prefix}_dl_btn",
-                )
+    with st.container(key=panel_key):
+        head_l, head_r = st.columns([2.2, 2.8], vertical_alignment="center")
+        with head_l:
+            st.markdown(f"#### {icon} {title}")
+        with head_r:
+            c2, c3 = st.columns([2, 1.2], vertical_alignment="center")
+            with c2:
+                st.progress(progress)
+            with c3:
+                with st.container(key=dl_key):
+                    st.download_button(
+                        "📥 다운로드",
+                        data=log['excel_bytes'] or b'',
+                        file_name=log['excel_fname'] or 'download.xlsx',
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary",
+                        disabled=not can_download,
+                        use_container_width=True,
+                        key=f"{key_prefix}_dl_btn_{seq}",
+                    )
 
-    for s in steps:
-        label, color, badge_icon = STATUS_BADGE[s['status']]
-        col1, col2, col3 = st.columns([0.4, 3.6, 1], vertical_alignment="center")
-        with col1:
-            st.markdown(f"### {badge_icon}")
-        with col2:
-            st.write(s['label'])
-            if s['detail']:
-                st.caption(f":red[{s['detail']}]" if s['status'] == 'error' else s['detail'])
-        with col3:
-            st.badge(label, color=color)
+        for i, s in enumerate(steps):
+            label, color, badge_icon = STATUS_BADGE[s['status']]
+            with st.container(key=f"{key_prefix}_step_{i}_{seq}"):
+                col1, col2, col3 = st.columns([0.4, 3.6, 1], vertical_alignment="center")
+                with col1:
+                    st.markdown(badge_icon)
+                with col2:
+                    st.write(s['label'])
+                    if s['detail']:
+                        st.caption(f":red[{s['detail']}]" if s['status'] == 'error' else s['detail'])
+                with col3:
+                    st.badge(label, color=color)
 
 
 def main():
@@ -688,15 +718,49 @@ def main():
     group_lookup    = build_index_lookup(st.session_state['index_group_df'])
     creative_lookup = build_creative_lookup(st.session_state['index_creative_df'])
 
+    if st.session_state['media_log'] is None and st.session_state['cat_log'] is None \
+            and not run_media and not run_cat:
+        st.info("파일을 업로드한 후 각 섹션의 버튼을 눌러주세요.")
+
+    # st.empty()로 자리를 잡기 전에 먼저 보여줘야 하는 안내는 여기서 처리한다 — placeholder를
+    # 만든 뒤에 일반 st.warning()을 호출하면 placeholder가 이미 차지한 자리보다 아래쪽에
+    # 그려져 버려서, 가공 내역 패널보다 밑에 경고가 나오는 순서 뒤바뀜이 생긴다.
+    if run_cat and cat_file and not group_lookup:
+        st.warning("⚠️ 적용된 인덱스가 없어 사업부구분을 판별할 수 없습니다. "
+                   "전체 행이 '#인덱스추가'로 표시되고 카테고리 구매 unique/quantity/price는 "
+                   "원본 총계 값 그대로 유지됩니다. 인덱스 파일을 먼저 업로드해주세요.")
+
+    # 가공 내역 영역 — 버튼을 누른 즉시 자리부터 잡아두고(placeholder), 단계가 진행될 때마다
+    # 그 자리를 다시 그려서 완료 전에도 실시간으로 진행 상황이 보이도록 한다.
+    media_slot = st.empty()
+    cat_slot   = st.empty()
+
+    def _refresh_media(log, pause=0.15):
+        with media_slot.container():
+            render_run_log("📊", "미디어 가공 내역", log, key_prefix="media")
+        if pause:
+            time.sleep(pause)
+
+    def _refresh_cat(log, pause=0.15):
+        with cat_slot.container():
+            if st.session_state['media_log'] is not None:
+                st.divider()
+            render_run_log("🛒", "카테고리 가공 내역", log, key_prefix="cat")
+        if pause:
+            time.sleep(pause)
+
     # ────────────────────────────── 미디어 가공 ──────────────────────────────
     if run_media:
         if not media_file:
             st.warning("미디어 파일을 업로드해주세요.")
         else:
             log = _new_run_log(MEDIA_STEP_LABELS)
+            _refresh_media(log)  # 버튼 클릭 즉시 전체 대기 상태로 먼저 표시
 
             # 1단계: CSV 파일 읽기 및 컬럼 구조 검증
             m_df = None
+            log['steps'][0]['status'] = 'running'
+            _refresh_media(log)
             try:
                 media_raw = read_csv_robust(media_file)
                 if detect_file_kind(media_raw) == 'category':
@@ -717,9 +781,12 @@ def main():
                 log['steps'][0]['status'] = 'error'
                 log['steps'][0]['detail'] = str(e)
                 m_df = None
+            _refresh_media(log)
 
             # 2단계: 인덱스 매칭 — 사업부구분 / D7 판정
             if log['steps'][0]['status'] == 'done':
+                log['steps'][1]['status'] = 'running'
+                _refresh_media(log)
                 try:
                     date_col = m_df.columns[M_DATE]
                     camp_col = m_df.columns[M_CAMP]
@@ -736,9 +803,12 @@ def main():
                 except Exception:
                     log['steps'][1]['status'] = 'error'
                     log['steps'][1]['detail'] = traceback.format_exc()
+                _refresh_media(log)
 
             # 3단계: 엑셀 파일 생성
             if log['steps'][1]['status'] == 'done':
+                log['steps'][2]['status'] = 'running'
+                _refresh_media(log)
                 try:
                     log['excel_bytes'] = build_media_excel(m_df)
                     log['excel_fname'] = f"미디어_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
@@ -746,8 +816,11 @@ def main():
                 except Exception:
                     log['steps'][2]['status'] = 'error'
                     log['steps'][2]['detail'] = traceback.format_exc()
+                _refresh_media(log, pause=0)
 
             st.session_state['media_log'] = log
+    elif st.session_state['media_log'] is not None:
+        _refresh_media(st.session_state['media_log'], pause=0)
 
     # ────────────────────────────── 카테고리 가공 ────────────────────────────
     if run_cat:
@@ -755,14 +828,12 @@ def main():
             st.warning("카테고리 파일을 업로드해주세요.")
         else:
             log = _new_run_log(CATEGORY_STEP_LABELS)
-
-            if not group_lookup:
-                st.warning("⚠️ 적용된 인덱스가 없어 사업부구분을 판별할 수 없습니다. "
-                           "전체 행이 '#인덱스추가'로 표시되고 카테고리 구매 unique/quantity/price는 "
-                           "원본 총계 값 그대로 유지됩니다. 인덱스 파일을 먼저 업로드해주세요.")
+            _refresh_cat(log)  # 버튼 클릭 즉시 전체 대기 상태로 먼저 표시
 
             # 1단계: CSV 파일 읽기 및 컬럼 구조 검증
             df1 = None
+            log['steps'][0]['status'] = 'running'
+            _refresh_cat(log)
             try:
                 cat_raw = read_csv_robust(cat_file)
                 if detect_file_kind(cat_raw) == 'media':
@@ -781,10 +852,13 @@ def main():
                 log['steps'][0]['status'] = 'error'
                 log['steps'][0]['detail'] = str(e)
                 df1 = None
+            _refresh_cat(log)
 
             # 2단계: 인덱스 매칭 — 사업부구분 / D7 판정
             biz_list = group_status = creative_status = None
             if log['steps'][0]['status'] == 'done':
+                log['steps'][1]['status'] = 'running'
+                _refresh_cat(log)
                 try:
                     biz_list, group_status, creative_status = process_category_step2(
                         df1, group_lookup, creative_lookup
@@ -795,10 +869,13 @@ def main():
                 except Exception:
                     log['steps'][1]['status'] = 'error'
                     log['steps'][1]['detail'] = traceback.format_exc()
+                _refresh_cat(log)
 
             # 3단계: 카테고리 값 매핑 (사업부구분 기준)
             df2 = None
             if log['steps'][1]['status'] == 'done':
+                log['steps'][2]['status'] = 'running'
+                _refresh_cat(log)
                 try:
                     df2, manual = process_category_step3(df1, biz_list)
                     n_manual = int(manual.sum())
@@ -807,9 +884,12 @@ def main():
                 except Exception:
                     log['steps'][2]['status'] = 'error'
                     log['steps'][2]['detail'] = traceback.format_exc()
+                _refresh_cat(log)
 
             # 4단계: 엑셀 파일 생성
             if log['steps'][2]['status'] == 'done':
+                log['steps'][3]['status'] = 'running'
+                _refresh_cat(log)
                 try:
                     final_df = process_category_finalize(df2, biz_list, group_status, creative_status)
                     log['rows'] = len(final_df)
@@ -819,24 +899,11 @@ def main():
                 except Exception:
                     log['steps'][3]['status'] = 'error'
                     log['steps'][3]['detail'] = traceback.format_exc()
+                _refresh_cat(log, pause=0)
 
             st.session_state['cat_log'] = log
-
-    media_log = st.session_state['media_log']
-    cat_log   = st.session_state['cat_log']
-
-    if media_log is None and cat_log is None:
-        st.info("파일을 업로드한 후 각 섹션의 버튼을 눌러주세요.")
-
-    st.divider()
-
-    # ────────────────────────────── 가공 내역 ────────────────────────────────
-    if media_log is not None:
-        render_run_log("📊", "미디어 가공 내역", media_log, key_prefix="media")
-    if cat_log is not None:
-        if media_log is not None:
-            st.divider()
-        render_run_log("🛒", "카테고리 가공 내역", cat_log, key_prefix="cat")
+    elif st.session_state['cat_log'] is not None:
+        _refresh_cat(st.session_state['cat_log'], pause=0)
 
 
 if __name__ == "__main__":

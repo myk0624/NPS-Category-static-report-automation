@@ -76,15 +76,15 @@ def detect_file_kind(df):
     return 'category' if CATEGORY_MARKER in df.columns else 'media'
 
 
-def _sniff_column_names(uploaded_file, encoding):
+def _sniff_column_names(uploaded_file, encoding, errors='strict'):
     """헤더 행과 첫 데이터 행의 실제 필드 수를 비교해 컬럼명 리스트를 만든다.
     데이터 행에 트레일링 콤마 등으로 헤더보다 필드가 더 많으면, 그 여분 필드에
     '_extra_N' 자리표시 이름을 붙여준다 — 이렇게 모든 필드에 명시적 이름을 지정해야
     pandas가 이름 없는 첫 열을 인덱스로 흡수하는 것을 막고 Date열이 항상 일반 컬럼으로
     읽히도록 보장할 수 있다."""
     uploaded_file.seek(0)
-    header_line = uploaded_file.readline().decode(encoding)
-    data_line   = uploaded_file.readline().decode(encoding)
+    header_line = uploaded_file.readline().decode(encoding, errors=errors)
+    data_line   = uploaded_file.readline().decode(encoding, errors=errors)
 
     header_fields = next(csv.reader([header_line])) if header_line else []
     data_fields   = next(csv.reader([data_line]))   if data_line   else header_fields
@@ -93,24 +93,62 @@ def _sniff_column_names(uploaded_file, encoding):
     return header_fields + [f'_extra_{i}' for i in range(n_extra)]
 
 
+def _read_csv_with_encoding(uploaded_file, encoding, errors='strict'):
+    names = _sniff_column_names(uploaded_file, encoding, errors=errors)
+    uploaded_file.seek(0)
+    df = pd.read_csv(uploaded_file, header=0, names=names, encoding=encoding, encoding_errors=errors)
+    extra_cols = [c for c in df.columns if c.startswith('_extra_')]
+    if extra_cols:
+        df = df.drop(columns=extra_cols)
+    return df
+
+
 def read_csv_robust(uploaded_file):
     """인코딩이 다른 CSV(UTF-8 / CP949 등)를 순차 시도하여 읽는다.
     헤더를 직접 읽어 컬럼명으로 명시 지정해서 읽기 때문에, 데이터 행의 필드 수가
     헤더보다 많은 경우(트레일링 콤마 등)에도 Date 등 첫 열이 인덱스로 잘못 흡수되지
-    않고 항상 일반 컬럼으로 읽힌다."""
-    for enc in ('utf-8', 'utf-8-sig', 'cp949'):
+    않고 항상 일반 컬럼으로 읽힌다.
+
+    1) utf-8 / utf-8-sig / cp949 순차 시도
+    2) 모두 실패하면 charset-normalizer로 실제 인코딩 자동 감지 후 재시도
+    3) 그래도 실패하면 errors='replace'로 깨진 바이트를 대체 문자로 치환해 읽음(경고 표시)
+    """
+    fname = getattr(uploaded_file, 'name', '(unknown)')
+    tried = ('utf-8', 'utf-8-sig', 'cp949')
+    for enc in tried:
         try:
-            names = _sniff_column_names(uploaded_file, enc)
-            uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, header=0, names=names, encoding=enc)
-            extra_cols = [c for c in df.columns if c.startswith('_extra_')]
-            if extra_cols:
-                df = df.drop(columns=extra_cols)
+            df = _read_csv_with_encoding(uploaded_file, enc)
+            st.write(f"[DEBUG] '{fname}' 인코딩 '{enc}'로 읽기 성공")
             return df
-        except (UnicodeDecodeError, UnicodeError):
+        except (UnicodeDecodeError, UnicodeError) as e:
+            st.write(f"[DEBUG] '{fname}' 인코딩 '{enc}' 실패: {e}")
             continue
-    uploaded_file.seek(0)
-    return pd.read_csv(uploaded_file, header=0, index_col=False)  # 마지막 시도, 오류 그대로 노출
+
+    # 자동 감지: charset-normalizer로 실제 인코딩 추정
+    detected = None
+    try:
+        from charset_normalizer import from_bytes
+        uploaded_file.seek(0)
+        raw = uploaded_file.read()
+        best = from_bytes(raw).best()
+        detected = best.encoding if best is not None else None
+    except ImportError:
+        st.write("[DEBUG] charset-normalizer가 설치되어 있지 않아 자동 감지를 건너뜁니다.")
+    except Exception as e:
+        st.write(f"[DEBUG] charset-normalizer 감지 중 오류: {e}")
+
+    if detected and detected not in tried:
+        st.write(f"[DEBUG] '{fname}' charset-normalizer 감지 인코딩: {detected}")
+        try:
+            df = _read_csv_with_encoding(uploaded_file, detected)
+            st.write(f"[DEBUG] '{fname}' 감지된 인코딩 '{detected}'로 읽기 성공")
+            return df
+        except (UnicodeDecodeError, UnicodeError, LookupError) as e:
+            st.write(f"[DEBUG] '{fname}' 감지된 인코딩 '{detected}'로도 실패: {e}")
+
+    # 최후 수단: 깨진 바이트를 대체 문자로 치환하며 읽기
+    st.warning(f"'{fname}'의 인코딩을 확인할 수 없어 일부 문자가 깨진 상태(대체 문자로 치환)로 읽었습니다. 결과를 확인해주세요.")
+    return _read_csv_with_encoding(uploaded_file, 'utf-8', errors='replace')
 
 
 # ──────────────────────────────────────────────────────────────────────────────

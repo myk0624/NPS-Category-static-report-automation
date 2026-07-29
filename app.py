@@ -98,7 +98,7 @@ def read_csv_robust(uploaded_file):
     헤더를 직접 읽어 컬럼명으로 명시 지정해서 읽기 때문에, 데이터 행의 필드 수가
     헤더보다 많은 경우(트레일링 콤마 등)에도 Date 등 첫 열이 인덱스로 잘못 흡수되지
     않고 항상 일반 컬럼으로 읽힌다."""
-    for enc in ('utf-8-sig', 'utf-8', 'cp949'):
+    for enc in ('utf-8', 'utf-8-sig', 'cp949'):
         try:
             names = _sniff_column_names(uploaded_file, enc)
             uploaded_file.seek(0)

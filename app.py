@@ -530,17 +530,169 @@ def build_category_excel(cat_df):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# [데이터가공 탭] 신규 가공 로직 — 캠페인명 단독 매칭 기준
+#
+# 기존(D7정제 탭) 방식과 완전히 별개의 인덱스 파일(시트: 캠페인 / 피드구분)을 사용한다.
+# - [캠페인] 시트: A=Campaign, B=사업부구분, C=유형 구분
+# - [피드구분] 시트: A=Creative Full Name, B=피드 구분
+#
+# RD 파일(미디어/카테고리 공통) 기준 열:
+# - F열 = Campaign, AZ열 = Creative Full Name
+#
+# 그룹_D7초과여부/소재_D7초과여부(A,B열) 계산 자체를 하지 않으므로 별도 삭제 로직이
+# 필요 없다 — 애초에 만들지 않는다.
+# ──────────────────────────────────────────────────────────────────────────────
+
+TYPE_OTHER_CAMPAIGN = '#그외캠페인'      # 사업부구분 자체가 매칭 안 되는 캠페인
+TYPE_NEED_ADD        = '#유형구분추가필요'  # 사업부구분은 매칭되었으나 유형 구분값이 카탈로그/스태틱이 아님
+FEED_NEED_ADD        = '#피드구분추가필요'  # 유형 구분=카탈로그인데 피드구분 인덱스가 없음
+
+INDEX2_CAMPAIGN_REQUIRED = ['Campaign', '사업부구분', '유형 구분']
+INDEX2_FEED_REQUIRED     = ['Creative Full Name', '피드 구분']
+
+V2_CAMP = ci('F')   # Campaign
+V2_CFN  = ci('AZ')  # Creative Full Name
+
+
+def parse_index_file_v2(uploaded_file):
+    """신규 인덱스 xlsx(캠페인/피드구분 2개 시트)를 읽어 (campaign_df, feed_df)로 반환.
+    시트명에 '캠페인'/'피드'가 포함되면 우선 사용하고, 없으면 시트 순서(1번째=캠페인,
+    2번째=피드구분)로 판별한다."""
+    sheets = pd.read_excel(uploaded_file, sheet_name=None, header=0, engine='openpyxl')
+    campaign_df = feed_df = None
+    for name, df in sheets.items():
+        if '캠페인' in str(name):
+            campaign_df = df
+        elif '피드' in str(name):
+            feed_df = df
+
+    names = list(sheets.keys())
+    if campaign_df is None and len(names) >= 1:
+        campaign_df = sheets[names[0]]
+    if feed_df is None and len(names) >= 2:
+        feed_df = sheets[names[1]]
+
+    return campaign_df, feed_df
+
+
+def build_campaign_lookup_v2(campaign_df):
+    """[캠페인] 시트 → {Campaign: (사업부구분, 유형 구분)} 매핑."""
+    lookup = {}
+    if campaign_df is None or campaign_df.empty:
+        return lookup
+    if 'Campaign' not in campaign_df.columns:
+        return lookup
+
+    biz_col  = '사업부구분' if '사업부구분' in campaign_df.columns else None
+    type_col = '유형 구분'  if '유형 구분'  in campaign_df.columns else None
+
+    for _, row in campaign_df.iterrows():
+        key = str(row['Campaign']).strip()
+        biz_val  = row[biz_col]  if biz_col  else np.nan
+        type_val = row[type_col] if type_col else np.nan
+        lookup[key] = (biz_val, type_val)
+    return lookup
+
+
+def build_feed_lookup_v2(feed_df):
+    """[피드구분] 시트 → {Creative Full Name: 피드 구분} 매핑."""
+    lookup = {}
+    if feed_df is None or feed_df.empty:
+        return lookup
+    if 'Creative Full Name' not in feed_df.columns:
+        return lookup
+
+    feed_col = '피드 구분' if '피드 구분' in feed_df.columns else None
+
+    for _, row in feed_df.iterrows():
+        key = str(row['Creative Full Name']).strip()
+        lookup[key] = row[feed_col] if feed_col else np.nan
+    return lookup
+
+
+def classify_row_v2(camp, cfn, campaign_lookup, feed_lookup):
+    """캠페인명 1건에 대한 (사업부구분, 유형 구분, 피드 구분) 판정.
+
+    - 캠페인명 자체가 인덱스에 없음 → 사업부구분 '#인덱스추가' / 유형·피드 구분 '#그외캠페인'
+    - 캠페인명 매칭 O, 유형 구분이 '카탈로그' → 피드구분 시트(Creative Full Name) 매칭
+        · 매칭 O → 해당 피드 구분값
+        · 매칭 X → '#피드구분추가필요'
+    - 캠페인명 매칭 O, 유형 구분이 '스태틱' → 피드 구분 = '스태틱'
+    - 캠페인명 매칭 O, 유형 구분이 '카탈로그'/'스태틱' 둘 다 아님(빈값 포함)
+        → 유형·피드 구분 모두 '#유형구분추가필요'
+    """
+    camp_s = str(camp).strip()
+    cfn_s  = str(cfn).strip()
+
+    entry = campaign_lookup.get(camp_s)
+    if entry is None:
+        return INDEX_MISSING_MARK, TYPE_OTHER_CAMPAIGN, TYPE_OTHER_CAMPAIGN
+
+    biz_val, type_val = entry
+    biz = str(biz_val).strip() if pd.notna(biz_val) and str(biz_val).strip() else INDEX_MISSING_MARK
+    type_str = str(type_val).strip() if pd.notna(type_val) else ''
+
+    if type_str == '카탈로그':
+        feed_val = feed_lookup.get(cfn_s)
+        if feed_val is None or (isinstance(feed_val, float) and pd.isna(feed_val)) or not str(feed_val).strip():
+            feed = FEED_NEED_ADD
+        else:
+            feed = str(feed_val).strip()
+        return biz, '카탈로그', feed
+    elif type_str == '스태틱':
+        return biz, '스태틱', '스태틱'
+    else:
+        return biz, TYPE_NEED_ADD, TYPE_NEED_ADD
+
+
+def classify_all_rows_v2(df, camp_col, cfn_col, campaign_lookup, feed_lookup):
+    """DataFrame 전체 행에 대해 (사업부구분 리스트, 유형 구분 리스트, 피드 구분 리스트) 반환."""
+    biz_list, type_list, feed_list = [], [], []
+    for camp, cfn in zip(df[camp_col], df[cfn_col]):
+        biz, typ, feed = classify_row_v2(camp, cfn, campaign_lookup, feed_lookup)
+        biz_list.append(biz)
+        type_list.append(typ)
+        feed_list.append(feed)
+    return biz_list, type_list, feed_list
+
+
+def insert_v2_columns(df, biz_list, type_list, feed_list):
+    """소구점 열 바로 다음에 [사업부구분 / 유형 구분 / 피드 구분] 3열을 삽입한다.
+    미디어·카테고리 파일 공통으로 사용 — 카테고리 파일은 이 3열 뒤에 기존 48열
+    (카테고리 구매~노크잇)이 그대로 이어진다."""
+    df = df.copy()
+    if '소구점' in df.columns:
+        pos = df.columns.get_loc('소구점') + 1
+        df.insert(pos, '사업부구분', biz_list)
+        df.insert(pos + 1, '유형 구분', type_list)
+        df.insert(pos + 2, '피드 구분', feed_list)
+    else:
+        df['사업부구분'] = biz_list
+        df['유형 구분']  = type_list
+        df['피드 구분']  = feed_list
+    return df
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Streamlit UI
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _init_session_state():
     defaults = {
+        # D7정제 탭(기존)
         'index_group_df':     None,
         'index_creative_df':  None,
         'index_filename':     None,
         'index_uploaded_at':  None,
         'media_log':          None,
         'cat_log':            None,
+        # 데이터가공 탭(신규)
+        'index2_campaign_df':  None,
+        'index2_feed_df':      None,
+        'index2_filename':     None,
+        'index2_uploaded_at':  None,
+        'media_log2':          None,
+        'cat_log2':            None,
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
@@ -558,6 +710,18 @@ MEDIA_STEP_LABELS = [
 CATEGORY_STEP_LABELS = [
     'CSV 파일 읽기 및 컬럼 구조 검증',
     '인덱스 매칭 — 사업부구분 / D7 판정',
+    '카테고리 값 매핑 (사업부구분 기준)',
+    '엑셀 파일 생성',
+]
+
+MEDIA_STEP_LABELS_V2 = [
+    'CSV 파일 읽기 및 컬럼 구조 검증',
+    '인덱스 매칭 — 사업부구분 / 유형 구분 / 피드 구분',
+    '엑셀 파일 생성',
+]
+CATEGORY_STEP_LABELS_V2 = [
+    'CSV 파일 읽기 및 컬럼 구조 검증',
+    '인덱스 매칭 — 사업부구분 / 유형 구분 / 피드 구분',
     '카테고리 값 매핑 (사업부구분 기준)',
     '엑셀 파일 생성',
 ]
@@ -682,12 +846,283 @@ def render_run_log(icon, title, log, key_prefix):
                     st.badge(label, color=color)
 
 
-def main():
-    st.set_page_config(page_title="NPS Report 가공기", layout="wide", page_icon="📊")
-    st.title("📊 NPS Report 데이터 가공기")
-    st.caption("미디어·카테고리 CSV 로우 데이터를 업로드하면 RD 시트 형식으로 자동 가공합니다.")
+def render_new_tab():
+    """[데이터가공] 탭 — 캠페인명 단독 매칭 기준 신규 가공 로직.
 
-    _init_session_state()
+    - D7 초과 여부 판정 자체를 하지 않음 (그룹_D7초과여부/소재_D7초과여부 열 없음)
+    - 인덱스 파일: [캠페인] 시트(Campaign/사업부구분/유형 구분), [피드구분] 시트
+      (Creative Full Name/피드 구분) — D7정제 탭의 인덱스와는 완전히 별도로 관리한다.
+    """
+    st.caption("캠페인명(F열) 단독 매칭으로 사업부구분·유형 구분·피드 구분을 추출하는 "
+               "신규 가공 방식입니다. D7 초과 여부는 판정하지 않습니다.")
+
+    ht1, hb1, ht2, hb2, ht3, hb3 = st.columns(
+        [2.3, 0.8, 2.3, 0.8, 2.3, 0.8], vertical_alignment="center"
+    )
+    with ht1:
+        st.markdown("### 📁 미디어 파일")
+    with hb1:
+        run_media2 = st.button("가공", key='media_btn2', type="primary", use_container_width=True)
+
+    with ht2:
+        st.markdown("### 📁 카테고리 파일")
+    with hb2:
+        run_cat2 = st.button("가공", key='cat_btn2', type="primary", use_container_width=True)
+
+    with ht3:
+        st.markdown("### 🗂️ 인덱스 파일")
+    with hb3:
+        run_index2 = st.button("업로드", key='index_btn2', type="primary", use_container_width=True)
+
+    u1, u2, u3 = st.columns(3)
+    with u1:
+        media_file2 = st.file_uploader("미디어 csv 업로드", type=['csv'], key='mf2',
+                                        label_visibility='collapsed')
+    with u2:
+        cat_file2 = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf2',
+                                      label_visibility='collapsed')
+    with u3:
+        index_file2 = st.file_uploader("인덱스 xlsx 업로드", type=['xlsx', 'xls'], key='ixf2',
+                                        label_visibility='collapsed')
+
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        if media_file2:
+            st.success(f"✅ {media_file2.name}")
+    with s2:
+        if cat_file2:
+            st.success(f"✅ {cat_file2.name}")
+    with s3:
+        if run_index2:
+            if not index_file2:
+                st.warning("인덱스 파일을 먼저 선택해주세요.")
+            else:
+                try:
+                    campaign_df, feed_df = parse_index_file_v2(index_file2)
+                    missing = [c for c in INDEX2_CAMPAIGN_REQUIRED if c not in campaign_df.columns]
+                    if missing:
+                        st.error(f"인덱스 [캠페인] 시트에 필요한 열이 없습니다: {', '.join(missing)}")
+                    else:
+                        if feed_df is None or any(c not in feed_df.columns for c in INDEX2_FEED_REQUIRED):
+                            st.warning("인덱스 [피드구분] 시트를 찾지 못했거나 필요한 열이 없습니다. "
+                                       "유형 구분이 '카탈로그'인 행은 모두 '#피드구분추가필요'로 표시됩니다.")
+                        st.session_state['index2_campaign_df'] = campaign_df
+                        st.session_state['index2_feed_df']     = feed_df
+                        st.session_state['index2_filename']    = index_file2.name
+                        st.session_state['index2_uploaded_at'] = pd.Timestamp.now()
+                except Exception as e:
+                    st.error(f"인덱스 파일 읽기 오류: {e}")
+
+        if st.session_state['index2_campaign_df'] is not None:
+            up_at = st.session_state['index2_uploaded_at']
+            st.success(f"✅ 현재 적용 중인 인덱스: **{st.session_state['index2_filename']}** "
+                       f"({up_at.strftime('%Y-%m-%d %H:%M')})")
+            camp_n = len(st.session_state['index2_campaign_df'])
+            feed_n = len(st.session_state['index2_feed_df']) \
+                if st.session_state['index2_feed_df'] is not None else 0
+            st.caption(f"캠페인 시트 {camp_n}건 · 피드구분 시트 {feed_n}건")
+        else:
+            st.info("적용된 인덱스가 없습니다. 파일 선택 후 업로드 버튼을 눌러주세요.")
+
+        st.caption("캠페인 시트: Campaign · 사업부구분 · 유형 구분\n\n"
+                   "피드구분 시트: Creative Full Name · 피드 구분\n\n"
+                   "업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
+
+    st.divider()
+
+    campaign_lookup = build_campaign_lookup_v2(st.session_state['index2_campaign_df'])
+    feed_lookup     = build_feed_lookup_v2(st.session_state['index2_feed_df'])
+
+    if st.session_state['media_log2'] is None and st.session_state['cat_log2'] is None \
+            and not run_media2 and not run_cat2:
+        st.info("파일을 업로드한 후 각 섹션의 버튼을 눌러주세요.")
+
+    if run_cat2 and cat_file2 and not campaign_lookup:
+        st.warning("⚠️ 적용된 인덱스가 없어 사업부구분을 판별할 수 없습니다. "
+                   "전체 행이 '#인덱스추가'/'#그외캠페인'으로 표시되고 카테고리 구매 unique/quantity/"
+                   "price는 원본 총계 값 그대로 유지됩니다. 인덱스 파일을 먼저 업로드해주세요.")
+
+    media_slot2 = st.empty()
+    cat_slot2   = st.empty()
+
+    def _refresh_media2(log, pause=0.15):
+        with media_slot2.container():
+            render_run_log("📊", "미디어 가공 내역", log, key_prefix="media2")
+        if pause:
+            time.sleep(pause)
+
+    def _refresh_cat2(log, pause=0.15):
+        with cat_slot2.container():
+            if st.session_state['media_log2'] is not None:
+                st.divider()
+            render_run_log("🛒", "카테고리 가공 내역", log, key_prefix="cat2")
+        if pause:
+            time.sleep(pause)
+
+    # ────────────────────────────── 미디어 가공 (신규) ──────────────────────────
+    if run_media2:
+        if not media_file2:
+            st.warning("미디어 파일을 업로드해주세요.")
+        else:
+            st.session_state['media_log2'] = None
+            log = _new_run_log(MEDIA_STEP_LABELS_V2)
+            _refresh_media2(log)
+
+            # 1단계: CSV 파일 읽기 및 컬럼 구조 검증
+            m_df = None
+            log['steps'][0]['status'] = 'running'
+            _refresh_media2(log)
+            try:
+                media_raw = read_csv_robust(media_file2)
+                if detect_file_kind(media_raw) == 'category':
+                    raise ValueError(
+                        f"'{media_file2.name}'은(는) 카테고리 파일 컬럼 구조로 보입니다. "
+                        "카테고리 파일 업로드란에 올린 뒤 카테고리 가공 버튼을 사용해주세요."
+                    )
+                col_note = None
+                if media_raw.shape[1] != len(MEDIA_COLUMNS):
+                    col_note = (f"컬럼 수({media_raw.shape[1]})가 예상({len(MEDIA_COLUMNS)}개)과 "
+                                "다릅니다. 컬럼 구조를 확인해주세요.")
+                m_df = process_media(media_raw)
+                if m_df.empty:
+                    raise ValueError("A열(날짜)을 인식할 수 있는 행이 없습니다. 날짜 형식을 확인해주세요.")
+                log['steps'][0]['status'] = 'done'
+                log['steps'][0]['detail'] = col_note
+            except Exception as e:
+                log['steps'][0]['status'] = 'error'
+                log['steps'][0]['detail'] = str(e)
+                m_df = None
+            _refresh_media2(log)
+
+            # 2단계: 인덱스 매칭 — 사업부구분 / 유형 구분 / 피드 구분
+            if log['steps'][0]['status'] == 'done':
+                log['steps'][1]['status'] = 'running'
+                _refresh_media2(log)
+                try:
+                    camp_col = m_df.columns[V2_CAMP]
+                    cfn_col  = m_df.columns[V2_CFN]
+                    biz_list, type_list, feed_list = classify_all_rows_v2(
+                        m_df, camp_col, cfn_col, campaign_lookup, feed_lookup
+                    )
+                    m_df = insert_v2_columns(m_df, biz_list, type_list, feed_list)
+                    n_missing = sum(1 for b in biz_list if b == INDEX_MISSING_MARK)
+                    log['steps'][1]['status'] = 'done'
+                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing}건" if n_missing else "전체 매칭 완료"
+                    log['rows'] = len(m_df)
+                except Exception:
+                    log['steps'][1]['status'] = 'error'
+                    log['steps'][1]['detail'] = traceback.format_exc()
+                _refresh_media2(log)
+
+            # 3단계: 엑셀 파일 생성
+            if log['steps'][1]['status'] == 'done':
+                log['steps'][2]['status'] = 'running'
+                _refresh_media2(log)
+                try:
+                    log['excel_bytes'] = build_media_excel(m_df)
+                    log['excel_fname'] = f"미디어_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['steps'][2]['status'] = 'done'
+                except Exception:
+                    log['steps'][2]['status'] = 'error'
+                    log['steps'][2]['detail'] = traceback.format_exc()
+                _refresh_media2(log, pause=0)
+
+            st.session_state['media_log2'] = log
+    elif st.session_state['media_log2'] is not None:
+        _refresh_media2(st.session_state['media_log2'], pause=0)
+
+    # ────────────────────────────── 카테고리 가공 (신규) ─────────────────────────
+    if run_cat2:
+        if not cat_file2:
+            st.warning("카테고리 파일을 업로드해주세요.")
+        else:
+            st.session_state['cat_log2'] = None
+            log = _new_run_log(CATEGORY_STEP_LABELS_V2)
+            _refresh_cat2(log)
+
+            # 1단계: CSV 파일 읽기 및 컬럼 구조 검증
+            df1 = None
+            log['steps'][0]['status'] = 'running'
+            _refresh_cat2(log)
+            try:
+                cat_raw = read_csv_robust(cat_file2)
+                if detect_file_kind(cat_raw) == 'media':
+                    raise ValueError(
+                        f"'{cat_file2.name}'은(는) 미디어 파일 컬럼 구조로 보입니다. "
+                        "미디어 파일 업로드란에 올린 뒤 미디어 가공 버튼을 사용해주세요."
+                    )
+                col_note = None
+                if cat_raw.shape[1] != len(CATEGORY_COLUMNS):
+                    col_note = (f"컬럼 수({cat_raw.shape[1]})가 예상({len(CATEGORY_COLUMNS)}개)과 "
+                                "다릅니다. 컬럼 구조를 확인해주세요.")
+                df1 = process_category_step1(cat_raw)
+                log['steps'][0]['status'] = 'done'
+                log['steps'][0]['detail'] = col_note
+            except Exception as e:
+                log['steps'][0]['status'] = 'error'
+                log['steps'][0]['detail'] = str(e)
+                df1 = None
+            _refresh_cat2(log)
+
+            # 2단계: 인덱스 매칭 — 사업부구분 / 유형 구분 / 피드 구분
+            biz_list = type_list = feed_list = None
+            if log['steps'][0]['status'] == 'done':
+                log['steps'][1]['status'] = 'running'
+                _refresh_cat2(log)
+                try:
+                    camp_col = df1.columns[V2_CAMP]
+                    cfn_col  = df1.columns[V2_CFN]
+                    biz_list, type_list, feed_list = classify_all_rows_v2(
+                        df1, camp_col, cfn_col, campaign_lookup, feed_lookup
+                    )
+                    n_missing = sum(1 for b in biz_list if b == INDEX_MISSING_MARK)
+                    log['steps'][1]['status'] = 'done'
+                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing}건" if n_missing else "전체 매칭 완료"
+                except Exception:
+                    log['steps'][1]['status'] = 'error'
+                    log['steps'][1]['detail'] = traceback.format_exc()
+                _refresh_cat2(log)
+
+            # 3단계: 카테고리 값 매핑 (사업부구분 기준) — 기존 치환 로직 그대로 재사용
+            df2 = None
+            if log['steps'][1]['status'] == 'done':
+                log['steps'][2]['status'] = 'running'
+                _refresh_cat2(log)
+                try:
+                    biz_array = np.array(biz_list, dtype=object)
+                    df2, manual = process_category_step3(df1, biz_array)
+                    n_manual = int(manual.sum())
+                    log['steps'][2]['status'] = 'done'
+                    log['steps'][2]['detail'] = f"수기확인 필요 {n_manual}건" if n_manual else "전체 매핑 완료"
+                except Exception:
+                    log['steps'][2]['status'] = 'error'
+                    log['steps'][2]['detail'] = traceback.format_exc()
+                _refresh_cat2(log)
+
+            # 4단계: 엑셀 파일 생성
+            if log['steps'][2]['status'] == 'done':
+                log['steps'][3]['status'] = 'running'
+                _refresh_cat2(log)
+                try:
+                    final_df = insert_v2_columns(df2, biz_list, type_list, feed_list)
+                    log['rows'] = len(final_df)
+                    log['excel_bytes'] = build_category_excel(final_df)
+                    log['excel_fname'] = f"카테고리_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['steps'][3]['status'] = 'done'
+                except Exception:
+                    log['steps'][3]['status'] = 'error'
+                    log['steps'][3]['detail'] = traceback.format_exc()
+                _refresh_cat2(log, pause=0)
+
+            st.session_state['cat_log2'] = log
+    elif st.session_state['cat_log2'] is not None:
+        _refresh_cat2(st.session_state['cat_log2'], pause=0)
+
+
+def render_legacy_tab():
+    """[D7정제] 탭 — 기존 가공 로직/기능을 그대로 보존한 화면. 내용 변경 없음."""
+    st.caption("그룹/소재 인덱스(Campaign+Ad Group[+Ad]) 기준으로 D7 초과 여부를 함께 판정하는 "
+               "기존 가공 방식입니다. 현재는 사용하지 않지만, 추후 재사용을 위해 기능을 보존합니다.")
 
     # ── 파일 업로드 (섹션별로 제목 행 오른쪽에 버튼, 업로더는 그 아래 전체 폭)
     # 제목 + 버튼 행 — 중첩 컬럼이 아닌 하나의 행(6칸)으로 구성해야 좁은 폭에서도
@@ -955,6 +1390,20 @@ def main():
             st.session_state['cat_log'] = log
     elif st.session_state['cat_log'] is not None:
         _refresh_cat(st.session_state['cat_log'], pause=0)
+
+
+def main():
+    st.set_page_config(page_title="NPS Report 가공기", layout="wide", page_icon="📊")
+    st.title("📊 NPS Report 데이터 가공기")
+    st.caption("미디어·카테고리 CSV 로우 데이터를 업로드하면 RD 시트 형식으로 자동 가공합니다.")
+
+    _init_session_state()
+
+    tab_new, tab_legacy = st.tabs(["🆕 데이터가공", "🗄️ D7정제"])
+    with tab_new:
+        render_new_tab()
+    with tab_legacy:
+        render_legacy_tab()
 
 
 if __name__ == "__main__":

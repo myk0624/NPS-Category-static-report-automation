@@ -198,16 +198,19 @@ INDEX_CREATIVE_COLUMNS = ['사업부구분', 'Media', 'Campaign', 'Ad Group', 'A
 
 
 def parse_index_file(uploaded_file):
-    """인덱스 xlsx(그룹/소재 2개 시트)를 읽어 (group_df, creative_df)로 반환.
-    시트명에 '그룹'/'소재'가 포함되면 이를 우선 사용하고, 없으면 시트 순서(1번째=그룹,
-    2번째=소재)로 판별한다."""
+    """인덱스 xlsx(그룹/소재/미디어구분 시트)를 읽어 (group_df, creative_df, media_df)로 반환.
+    시트명에 '그룹'/'소재'/'미디어'가 포함되면 이를 우선 사용하고, 그룹/소재는 시트명으로
+    찾지 못하면 시트 순서(1번째=그룹, 2번째=소재)로 판별한다. [미디어구분] 시트는 없으면
+    None으로 둔다(위치 기반 폴백 없음)."""
     sheets = pd.read_excel(uploaded_file, sheet_name=None, header=0, engine='openpyxl')
-    group_df = creative_df = None
+    group_df = creative_df = media_df = None
     for name, df in sheets.items():
         if '그룹' in str(name):
             group_df = df
         elif '소재' in str(name):
             creative_df = df
+        elif '미디어' in str(name):
+            media_df = df
 
     names = list(sheets.keys())
     if group_df is None and len(names) >= 1:
@@ -215,7 +218,7 @@ def parse_index_file(uploaded_file):
     if creative_df is None and len(names) >= 2:
         creative_df = sheets[names[1]]
 
-    return group_df, creative_df
+    return group_df, creative_df, media_df
 
 
 INDEX_MISSING_MARK = '#인덱스추가'  # 인덱스에 없는 Campaign+Ad Group(+Ad) 표시값
@@ -262,6 +265,21 @@ def build_creative_lookup(creative_df):
     for _, row in g.iterrows():
         key = (str(row['Campaign']).strip(), str(row['Ad Group']).strip(), str(row['Ad']).strip())
         lookup[key] = row[end_col] if end_col else pd.NaT
+    return lookup
+
+
+def build_media_group_lookup(media_df):
+    """[미디어구분] 시트 → {Media: 대구분} 매핑. 시트가 없거나 비어있으면 빈 딕셔너리를
+    반환한다(경고 없음) — [데이터가공]/[D7정제] 탭, 미디어/카테고리 파일 공통으로 사용."""
+    lookup = {}
+    if media_df is None or media_df.empty:
+        return lookup
+    if 'Media' not in media_df.columns or '대구분' not in media_df.columns:
+        return lookup
+
+    for _, row in media_df.iterrows():
+        key = str(row['Media']).strip()
+        lookup[key] = row['대구분']
     return lookup
 
 
@@ -495,6 +513,71 @@ def process_category_finalize(df, biz_list, group_status, creative_status):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 최종 값 치환 — Campaign Theme / 대구분 / USP(ADEF)
+#
+# [데이터가공]/[D7정제] 탭, 미디어/카테고리 파일 공통으로 각 처리 흐름의 기존 로직이 모두
+# 끝난 뒤 엑셀 생성 직전 마지막 단계에서 적용한다. '사업부구분'이 INDEX_MISSING_MARK인
+# 행(인덱스 미매칭)은 제외하고 원본 값을 그대로 유지한다.
+# ──────────────────────────────────────────────────────────────────────────────
+
+MEDIA_GROUP_MISSING_MARK = '#미디어구분추가필요'  # [미디어구분] 인덱스에 없는 Media 표시값
+
+
+def apply_final_value_overrides(df, biz_col='사업부구분', media_group_lookup=None):
+    """Campaign Theme / Campaign Theme(ADEF) / 대구분 / USP(ADEF) 값을 최종 치환한다.
+
+    - Campaign Theme: 값이 정확히 '-'인 행만 'BS'로 치환
+    - Campaign Theme(ADEF): 값이 정확히 '-'인 행만 '사업부'로 치환
+    - 대구분: media_group_lookup(Media → 대구분)으로 치환. Media가 lookup에 없으면
+      MEDIA_GROUP_MISSING_MARK로 표기
+    - USP(ADEF): 값이 정확히 '-'인 행만 '사업부Static'으로 치환 (USP Category 기반
+      LVG/PET/CARTOOL/KID 서브매핑과는 무관한 별도 로직)
+
+    biz_col이 INDEX_MISSING_MARK인 행은 위 3가지 모두에서 제외하고 원본 값을 유지한다.
+    Returns (수정된 df, 대구분 미매칭 건수).
+    """
+    out = df.copy()
+    media_group_lookup = media_group_lookup or {}
+
+    if biz_col in out.columns:
+        target_mask = out[biz_col] != INDEX_MISSING_MARK
+    else:
+        target_mask = pd.Series(True, index=out.index)
+
+    if 'Campaign Theme' in out.columns:
+        mask = target_mask & (out['Campaign Theme'] == '-')
+        out.loc[mask, 'Campaign Theme'] = 'BS'
+
+    if 'Campaign Theme(ADEF)' in out.columns:
+        mask = target_mask & (out['Campaign Theme(ADEF)'] == '-')
+        out.loc[mask, 'Campaign Theme(ADEF)'] = '사업부'
+
+    n_media_missing = 0
+    if '대구분' in out.columns and 'Media' in out.columns:
+        new_vals, missing_flags = [], []
+        for is_target, media_val, cur_val in zip(target_mask, out['Media'], out['대구분']):
+            if not is_target:
+                new_vals.append(cur_val)
+                missing_flags.append(False)
+                continue
+            media_key = str(media_val).strip()
+            if media_key in media_group_lookup:
+                new_vals.append(media_group_lookup[media_key])
+                missing_flags.append(False)
+            else:
+                new_vals.append(MEDIA_GROUP_MISSING_MARK)
+                missing_flags.append(True)
+        out['대구분'] = new_vals
+        n_media_missing = sum(missing_flags)
+
+    if 'USP(ADEF)' in out.columns:
+        mask = target_mask & (out['USP(ADEF)'] == '-')
+        out.loc[mask, 'USP(ADEF)'] = '사업부Static'
+
+    return out, n_media_missing
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 화면 표시 전 Arrow 직렬화 안전화
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -555,16 +638,19 @@ V2_CFN  = ci('AZ')  # Creative Full Name
 
 
 def parse_index_file_v2(uploaded_file):
-    """신규 인덱스 xlsx(캠페인/피드구분 2개 시트)를 읽어 (campaign_df, feed_df)로 반환.
-    시트명에 '캠페인'/'피드'가 포함되면 우선 사용하고, 없으면 시트 순서(1번째=캠페인,
-    2번째=피드구분)로 판별한다."""
+    """신규 인덱스 xlsx(캠페인/피드구분/미디어구분 시트)를 읽어 (campaign_df, feed_df, media_df)로
+    반환. 시트명에 '캠페인'/'피드'/'미디어'가 포함되면 우선 사용하고, 캠페인/피드구분은 시트명으로
+    찾지 못하면 시트 순서(1번째=캠페인, 2번째=피드구분)로 판별한다. [미디어구분] 시트는 없으면
+    None으로 둔다(위치 기반 폴백 없음)."""
     sheets = pd.read_excel(uploaded_file, sheet_name=None, header=0, engine='openpyxl')
-    campaign_df = feed_df = None
+    campaign_df = feed_df = media_df = None
     for name, df in sheets.items():
         if '캠페인' in str(name):
             campaign_df = df
         elif '피드' in str(name):
             feed_df = df
+        elif '미디어' in str(name):
+            media_df = df
 
     names = list(sheets.keys())
     if campaign_df is None and len(names) >= 1:
@@ -572,7 +658,7 @@ def parse_index_file_v2(uploaded_file):
     if feed_df is None and len(names) >= 2:
         feed_df = sheets[names[1]]
 
-    return campaign_df, feed_df
+    return campaign_df, feed_df, media_df
 
 
 def build_campaign_lookup_v2(campaign_df):
@@ -682,6 +768,7 @@ def _init_session_state():
         # D7정제 탭(기존)
         'index_group_df':     None,
         'index_creative_df':  None,
+        'index_media_df':     None,
         'index_filename':     None,
         'index_uploaded_at':  None,
         'media_log':          None,
@@ -689,6 +776,7 @@ def _init_session_state():
         # 데이터가공 탭(신규)
         'index2_campaign_df':  None,
         'index2_feed_df':      None,
+        'index2_media_df':     None,
         'index2_filename':     None,
         'index2_uploaded_at':  None,
         'media_log2':          None,
@@ -705,24 +793,36 @@ def _init_session_state():
 MEDIA_STEP_LABELS = [
     'CSV 파일 읽기 및 컬럼 구조 검증',
     '인덱스 매칭 — 사업부구분 / D7 판정',
+    'Campaign Theme 값 치환',
+    '대구분 값 치환 (미디어구분 인덱스)',
+    'USP(ADEF) 값 치환',
     '엑셀 파일 생성',
 ]
 CATEGORY_STEP_LABELS = [
     'CSV 파일 읽기 및 컬럼 구조 검증',
     '인덱스 매칭 — 사업부구분 / D7 판정',
     '카테고리 값 매핑 (사업부구분 기준)',
+    'Campaign Theme 값 치환',
+    '대구분 값 치환 (미디어구분 인덱스)',
+    'USP(ADEF) 값 치환',
     '엑셀 파일 생성',
 ]
 
 MEDIA_STEP_LABELS_V2 = [
     'CSV 파일 읽기 및 컬럼 구조 검증',
     '인덱스 매칭 — 사업부구분 / 유형 구분 / 피드 구분',
+    'Campaign Theme 값 치환',
+    '대구분 값 치환 (미디어구분 인덱스)',
+    'USP(ADEF) 값 치환',
     '엑셀 파일 생성',
 ]
 CATEGORY_STEP_LABELS_V2 = [
     'CSV 파일 읽기 및 컬럼 구조 검증',
     '인덱스 매칭 — 사업부구분 / 유형 구분 / 피드 구분',
     '카테고리 값 매핑 (사업부구분 기준)',
+    'Campaign Theme 값 치환',
+    '대구분 값 치환 (미디어구분 인덱스)',
+    'USP(ADEF) 값 치환',
     '엑셀 파일 생성',
 ]
 
@@ -898,7 +998,7 @@ def render_new_tab():
                 st.warning("인덱스 파일을 먼저 선택해주세요.")
             else:
                 try:
-                    campaign_df, feed_df = parse_index_file_v2(index_file2)
+                    campaign_df, feed_df, media_df = parse_index_file_v2(index_file2)
                     missing = [c for c in INDEX2_CAMPAIGN_REQUIRED if c not in campaign_df.columns]
                     if missing:
                         st.error(f"인덱스 [캠페인] 시트에 필요한 열이 없습니다: {', '.join(missing)}")
@@ -908,6 +1008,7 @@ def render_new_tab():
                                        "유형 구분이 '카탈로그'인 행은 모두 '#피드구분추가필요'로 표시됩니다.")
                         st.session_state['index2_campaign_df'] = campaign_df
                         st.session_state['index2_feed_df']     = feed_df
+                        st.session_state['index2_media_df']    = media_df
                         st.session_state['index2_filename']    = index_file2.name
                         st.session_state['index2_uploaded_at'] = pd.Timestamp.now()
                 except Exception as e:
@@ -930,8 +1031,9 @@ def render_new_tab():
 
     st.divider()
 
-    campaign_lookup = build_campaign_lookup_v2(st.session_state['index2_campaign_df'])
-    feed_lookup     = build_feed_lookup_v2(st.session_state['index2_feed_df'])
+    campaign_lookup    = build_campaign_lookup_v2(st.session_state['index2_campaign_df'])
+    feed_lookup        = build_feed_lookup_v2(st.session_state['index2_feed_df'])
+    media_group_lookup = build_media_group_lookup(st.session_state['index2_media_df'])
 
     if st.session_state['media_log2'] is None and st.session_state['cat_log2'] is None \
             and not run_media2 and not run_cat2:
@@ -1014,17 +1116,47 @@ def render_new_tab():
                     log['steps'][1]['detail'] = traceback.format_exc()
                 _refresh_media2(log)
 
-            # 3단계: 엑셀 파일 생성
+            # 3단계: Campaign Theme 값 치환 / 4단계: 대구분 값 치환 / 5단계: USP(ADEF) 값 치환
+            n_media_missing = 0
             if log['steps'][1]['status'] == 'done':
                 log['steps'][2]['status'] = 'running'
                 _refresh_media2(log)
                 try:
-                    log['excel_bytes'] = build_media_excel(m_df)
-                    log['excel_fname'] = f"미디어_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    m_df, n_media_missing = apply_final_value_overrides(
+                        m_df, media_group_lookup=media_group_lookup
+                    )
                     log['steps'][2]['status'] = 'done'
                 except Exception:
                     log['steps'][2]['status'] = 'error'
                     log['steps'][2]['detail'] = traceback.format_exc()
+                _refresh_media2(log)
+
+            if log['steps'][2]['status'] == 'done':
+                log['steps'][3]['status'] = 'running'
+                _refresh_media2(log)
+                log['steps'][3]['status'] = 'done'
+                log['steps'][3]['detail'] = (
+                    f"⚠️ {n_media_missing}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
+                )
+                _refresh_media2(log)
+
+            if log['steps'][3]['status'] == 'done':
+                log['steps'][4]['status'] = 'running'
+                _refresh_media2(log)
+                log['steps'][4]['status'] = 'done'
+                _refresh_media2(log)
+
+            # 6단계: 엑셀 파일 생성
+            if log['steps'][4]['status'] == 'done':
+                log['steps'][5]['status'] = 'running'
+                _refresh_media2(log)
+                try:
+                    log['excel_bytes'] = build_media_excel(m_df)
+                    log['excel_fname'] = f"미디어_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['steps'][5]['status'] = 'done'
+                except Exception:
+                    log['steps'][5]['status'] = 'error'
+                    log['steps'][5]['detail'] = traceback.format_exc()
                 _refresh_media2(log, pause=0)
 
             st.session_state['media_log2'] = log
@@ -1099,19 +1231,53 @@ def render_new_tab():
                     log['steps'][2]['detail'] = traceback.format_exc()
                 _refresh_cat2(log)
 
-            # 4단계: 엑셀 파일 생성
+            # 4단계: Campaign Theme 값 치환 (여기서 사업부구분/유형구분/피드구분 열을 먼저
+            # 삽입해야 apply_final_value_overrides가 사업부구분 기준으로 대상 행을 판정할 수 있음)
+            final_df = None
+            n_media_missing = 0
             if log['steps'][2]['status'] == 'done':
                 log['steps'][3]['status'] = 'running'
                 _refresh_cat2(log)
                 try:
                     final_df = insert_v2_columns(df2, biz_list, type_list, feed_list)
+                    final_df, n_media_missing = apply_final_value_overrides(
+                        final_df, media_group_lookup=media_group_lookup
+                    )
                     log['rows'] = len(final_df)
-                    log['excel_bytes'] = build_category_excel(final_df)
-                    log['excel_fname'] = f"카테고리_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
                     log['steps'][3]['status'] = 'done'
                 except Exception:
                     log['steps'][3]['status'] = 'error'
                     log['steps'][3]['detail'] = traceback.format_exc()
+                _refresh_cat2(log)
+
+            # 5단계: 대구분 값 치환
+            if log['steps'][3]['status'] == 'done':
+                log['steps'][4]['status'] = 'running'
+                _refresh_cat2(log)
+                log['steps'][4]['status'] = 'done'
+                log['steps'][4]['detail'] = (
+                    f"⚠️ {n_media_missing}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
+                )
+                _refresh_cat2(log)
+
+            # 6단계: USP(ADEF) 값 치환
+            if log['steps'][4]['status'] == 'done':
+                log['steps'][5]['status'] = 'running'
+                _refresh_cat2(log)
+                log['steps'][5]['status'] = 'done'
+                _refresh_cat2(log)
+
+            # 7단계: 엑셀 파일 생성
+            if log['steps'][5]['status'] == 'done':
+                log['steps'][6]['status'] = 'running'
+                _refresh_cat2(log)
+                try:
+                    log['excel_bytes'] = build_category_excel(final_df)
+                    log['excel_fname'] = f"카테고리_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['steps'][6]['status'] = 'done'
+                except Exception:
+                    log['steps'][6]['status'] = 'error'
+                    log['steps'][6]['detail'] = traceback.format_exc()
                 _refresh_cat2(log, pause=0)
 
             st.session_state['cat_log2'] = log
@@ -1171,13 +1337,14 @@ def render_legacy_tab():
                 st.warning("인덱스 파일을 먼저 선택해주세요.")
             else:
                 try:
-                    group_df, creative_df = parse_index_file(index_file)
+                    group_df, creative_df, media_df = parse_index_file(index_file)
                     missing = [c for c in INDEX_GROUP_COLUMNS if c not in group_df.columns]
                     if missing:
                         st.error(f"인덱스 그룹 시트에 필요한 열이 없습니다: {', '.join(missing)}")
                     else:
                         st.session_state['index_group_df']    = group_df
                         st.session_state['index_creative_df'] = creative_df
+                        st.session_state['index_media_df']    = media_df
                         st.session_state['index_filename']    = index_file.name
                         st.session_state['index_uploaded_at'] = pd.Timestamp.now()
                 except Exception as e:
@@ -1199,8 +1366,9 @@ def render_legacy_tab():
 
     st.divider()
 
-    group_lookup    = build_index_lookup(st.session_state['index_group_df'])
-    creative_lookup = build_creative_lookup(st.session_state['index_creative_df'])
+    group_lookup       = build_index_lookup(st.session_state['index_group_df'])
+    creative_lookup    = build_creative_lookup(st.session_state['index_creative_df'])
+    media_group_lookup = build_media_group_lookup(st.session_state['index_media_df'])
 
     if st.session_state['media_log'] is None and st.session_state['cat_log'] is None \
             and not run_media and not run_cat:
@@ -1290,17 +1458,47 @@ def render_legacy_tab():
                     log['steps'][1]['detail'] = traceback.format_exc()
                 _refresh_media(log)
 
-            # 3단계: 엑셀 파일 생성
+            # 3단계: Campaign Theme 값 치환 / 4단계: 대구분 값 치환 / 5단계: USP(ADEF) 값 치환
+            n_media_missing = 0
             if log['steps'][1]['status'] == 'done':
                 log['steps'][2]['status'] = 'running'
                 _refresh_media(log)
                 try:
-                    log['excel_bytes'] = build_media_excel(m_df)
-                    log['excel_fname'] = f"미디어_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    m_df, n_media_missing = apply_final_value_overrides(
+                        m_df, media_group_lookup=media_group_lookup
+                    )
                     log['steps'][2]['status'] = 'done'
                 except Exception:
                     log['steps'][2]['status'] = 'error'
                     log['steps'][2]['detail'] = traceback.format_exc()
+                _refresh_media(log)
+
+            if log['steps'][2]['status'] == 'done':
+                log['steps'][3]['status'] = 'running'
+                _refresh_media(log)
+                log['steps'][3]['status'] = 'done'
+                log['steps'][3]['detail'] = (
+                    f"⚠️ {n_media_missing}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
+                )
+                _refresh_media(log)
+
+            if log['steps'][3]['status'] == 'done':
+                log['steps'][4]['status'] = 'running'
+                _refresh_media(log)
+                log['steps'][4]['status'] = 'done'
+                _refresh_media(log)
+
+            # 6단계: 엑셀 파일 생성
+            if log['steps'][4]['status'] == 'done':
+                log['steps'][5]['status'] = 'running'
+                _refresh_media(log)
+                try:
+                    log['excel_bytes'] = build_media_excel(m_df)
+                    log['excel_fname'] = f"미디어_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['steps'][5]['status'] = 'done'
+                except Exception:
+                    log['steps'][5]['status'] = 'error'
+                    log['steps'][5]['detail'] = traceback.format_exc()
                 _refresh_media(log, pause=0)
 
             st.session_state['media_log'] = log
@@ -1372,19 +1570,53 @@ def render_legacy_tab():
                     log['steps'][2]['detail'] = traceback.format_exc()
                 _refresh_cat(log)
 
-            # 4단계: 엑셀 파일 생성
+            # 4단계: Campaign Theme 값 치환 (여기서 최종 열 배치를 먼저 끝내야
+            # apply_final_value_overrides가 사업부구분 기준으로 대상 행을 판정할 수 있음)
+            final_df = None
+            n_media_missing = 0
             if log['steps'][2]['status'] == 'done':
                 log['steps'][3]['status'] = 'running'
                 _refresh_cat(log)
                 try:
                     final_df = process_category_finalize(df2, biz_list, group_status, creative_status)
+                    final_df, n_media_missing = apply_final_value_overrides(
+                        final_df, media_group_lookup=media_group_lookup
+                    )
                     log['rows'] = len(final_df)
-                    log['excel_bytes'] = build_category_excel(final_df)
-                    log['excel_fname'] = f"카테고리_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
                     log['steps'][3]['status'] = 'done'
                 except Exception:
                     log['steps'][3]['status'] = 'error'
                     log['steps'][3]['detail'] = traceback.format_exc()
+                _refresh_cat(log)
+
+            # 5단계: 대구분 값 치환
+            if log['steps'][3]['status'] == 'done':
+                log['steps'][4]['status'] = 'running'
+                _refresh_cat(log)
+                log['steps'][4]['status'] = 'done'
+                log['steps'][4]['detail'] = (
+                    f"⚠️ {n_media_missing}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
+                )
+                _refresh_cat(log)
+
+            # 6단계: USP(ADEF) 값 치환
+            if log['steps'][4]['status'] == 'done':
+                log['steps'][5]['status'] = 'running'
+                _refresh_cat(log)
+                log['steps'][5]['status'] = 'done'
+                _refresh_cat(log)
+
+            # 7단계: 엑셀 파일 생성
+            if log['steps'][5]['status'] == 'done':
+                log['steps'][6]['status'] = 'running'
+                _refresh_cat(log)
+                try:
+                    log['excel_bytes'] = build_category_excel(final_df)
+                    log['excel_fname'] = f"카테고리_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['steps'][6]['status'] = 'done'
+                except Exception:
+                    log['steps'][6]['status'] = 'error'
+                    log['steps'][6]['detail'] = traceback.format_exc()
                 _refresh_cat(log, pause=0)
 
             st.session_state['cat_log'] = log

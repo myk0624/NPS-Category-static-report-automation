@@ -174,6 +174,7 @@ BIZ_TO_CATEGORY_GROUP = {
     '사업부-키즈':          '키즈',
     '사업부-펫':            '펫',
     '사업부-여가생활e쿠폰': '여가/도서(e쿠폰)',
+    '사업부-디지털가전':    '디지털가전',
 }
 USP_TO_CATEGORY_GROUP = {
     'LVG':     '리빙',
@@ -443,12 +444,18 @@ def process_category_step2(df, group_lookup, creative_lookup):
     return biz_list, group_status, creative_status
 
 
-def process_category_step3(df, biz_list):
+def process_category_step3(df, biz_list, type_list=None):
     """3단계: 사업부구분(2단계 결과) 기준 카테고리 값 매핑 — 카테고리 구매 unique/quantity/price
     3열의 값만 실제 카테고리 그룹 열(예: '가구 unique/quantity/price')의 값으로 치환하고,
     나머지 45열(패션·뷰티·...·노크잇)은 원본 값 그대로 둔다. 매핑 실패(사업부구분 미매핑,
     사업부-연합의 USP 미매핑, 인덱스 자체 미매칭)는 원본 총계 값을 그대로 두고 수기확인
     플래그만 세운다.
+
+    type_list([데이터가공] 탭 전용, classify_all_rows_v2의 유형 구분 리스트)가 주어지면,
+    사업부구분='사업부-그로서리-별도' & 해당 행 유형 구분='카탈로그'인 경우 기본 매핑('식품')
+    대신 'e-kam'을 강제 적용한다. type_list=None([D7정제] 탭은 유형 구분 개념이 없어 항상
+    None으로 호출됨)이면 이 예외는 적용되지 않고 기존 동작(사업부-그로서리-별도 → 식품)을
+    그대로 따른다.
     Returns (df, manual_bool_array).
     """
     n      = len(df)
@@ -466,7 +473,10 @@ def process_category_step3(df, biz_list):
         biz_str = str(biz).strip() if biz not in ('', None) and biz != INDEX_MISSING_MARK else ''
 
         group_name = None
-        if biz_str == '사업부-연합':
+        if type_list is not None and biz_str == '사업부-그로서리-별도' \
+                and str(type_list[pos]).strip() == '카탈로그':
+            group_name = 'e-kam'  # [데이터가공] 탭 전용 예외: 그로서리-별도 + 카탈로그 → e-kam
+        elif biz_str == '사업부-연합':
             usp = str(row_val(row, C_AV, '')).strip().upper()
             group_name = USP_TO_CATEGORY_GROUP.get(usp)
             if group_name is None:
@@ -1222,7 +1232,7 @@ def render_new_tab():
                 _refresh_cat2(log)
                 try:
                     biz_array = np.array(biz_list, dtype=object)
-                    df2, manual = process_category_step3(df1, biz_array)
+                    df2, manual = process_category_step3(df1, biz_array, type_list=type_list)
                     n_manual = int(manual.sum())
                     log['steps'][2]['status'] = 'done'
                     log['steps'][2]['detail'] = f"수기확인 필요 {n_manual}건" if n_manual else "전체 매핑 완료"

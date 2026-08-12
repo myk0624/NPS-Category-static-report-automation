@@ -530,7 +530,7 @@ def apply_final_value_overrides(df, biz_col='사업부구분', media_group_looku
     - Campaign Theme(ADEF): 값이 정확히 '-'인 행만 '사업부'로 치환
     - 대구분: media_group_lookup(Media → 대구분)으로 치환. Media가 lookup에 없으면
       MEDIA_GROUP_MISSING_MARK로 표기
-    - USP(ADEF): 값이 정확히 '-'인 행만 '사업부Static'으로 치환 (USP Category 기반
+    - USP(ADEF): 값이 정확히 '-'인 행만 '사업부 Static'으로 치환 (USP Category 기반
       LVG/PET/CARTOOL/KID 서브매핑과는 무관한 별도 로직)
 
     biz_col이 INDEX_MISSING_MARK인 행은 위 3가지 모두에서 제외하고 원본 값을 유지한다.
@@ -572,7 +572,7 @@ def apply_final_value_overrides(df, biz_col='사업부구분', media_group_looku
 
     if 'USP(ADEF)' in out.columns:
         mask = target_mask & (out['USP(ADEF)'] == '-')
-        out.loc[mask, 'USP(ADEF)'] = '사업부Static'
+        out.loc[mask, 'USP(ADEF)'] = '사업부 Static'
 
     return out, n_media_missing
 

@@ -179,7 +179,10 @@ BIZ_TO_CATEGORY_GROUP = {
 USP_TO_CATEGORY_GROUP = {
     'LVG':     '리빙',
     'PET':     '펫',
+    'CAR':     '자동차/공구',
+    'TOOL':    '자동차/공구',
     'CARTOOL': '자동차/공구',
+    'STN':     '자동차/공구',
     'KID':     '키즈',
 }
 GENERIC_CATEGORY_COLS = ('카테고리 구매 unique', '카테고리 구매 quantity', '카테고리 구매 price')

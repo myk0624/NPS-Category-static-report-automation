@@ -847,6 +847,97 @@ STATUS_BADGE = {
 }
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 안내 영역 — [데이터가공]/[D7정제] 탭 공통 UI. 탭별 서브탭 이름과 내용만 다르다.
+# ──────────────────────────────────────────────────────────────────────────────
+
+GUIDE_CONTENT = {
+    'new': [
+        ("사업부/유형구분",
+         "인덱스 파일 [캠페인] 시트, 캠페인명(F열) 기준 매칭 → 사업부구분 **BR열** / "
+         "유형구분 **BS열** 추출\n\n"
+         "**사업부구분 추출값**\n"
+         "- `각 사업부별 매칭` : 인덱스 파일 기준 매칭\n"
+         "- `#인덱스추가` : 인덱스 미매칭 캠페인\n\n"
+         "**유형구분 추출값**\n"
+         "- `#유형구분추가필요` : 매칭됐지만 값 없음\n"
+         "- `#그외캠페인` : 인덱스 미매칭 캠페인"),
+        ("피드구분",
+         "Creative Full Name(AZ열), [피드구분] 시트 매칭 → 피드구분 **BT열** 추출\n\n"
+         "- `각 피드 정상 매칭` : 인덱스 파일 기준 매칭\n"
+         "- `스태틱` : 유형구분이 스태틱인 경우 항상 고정\n"
+         "- `#피드구분추가필요` : 유형구분이 카탈로그인데 피드 미등록"),
+        ("카테고리매핑",
+         "- `기본 매핑` : 사업부구분 → 동일 카테고리열 (가구→가구열, 그로서리→식품열 등)\n"
+         "- `사업부-연합` : USP Category 값으로 2차 매핑, 미해당 시 `수기확인`\n"
+         "- `그로서리-별도+카탈로그` : 식품열 대신 `e-kam`열로 치환"),
+        ("공통치환",
+         "- `Campaign Theme` : `-` → `BS`\n"
+         "- `Campaign Theme(ADEF)` : `-` → `사업부`\n"
+         "- `대구분` : 미디어구분 시트 기준 치환, 미인식 시 `#미디어구분추가필요`\n"
+         "- `USP(ADEF)` : `-` → `사업부Static`"),
+    ],
+    'legacy': [
+        ("사업부구분",
+         "인덱스 파일 [그룹]/[소재] 시트, Media+Campaign+Ad Group(+Ad) 다중 컬럼 매칭 → "
+         "사업부구분 추출\n\n"
+         "**추출 위치**\n"
+         "- 미디어 파일 : 맨 끝열 (**BT열**)\n"
+         "- 카테고리 파일 : 소구점 다음 (**BT열**)\n\n"
+         "**추출값**\n"
+         "- `각 사업부별 매칭` : 인덱스 파일 기준 매칭\n"
+         "- `#인덱스추가` : 인덱스 미매칭 캠페인"),
+        ("D7초과여부",
+         "데이터 날짜가 인덱스 종료일+7일을 넘는지로 판정 → 미디어·카테고리 공통 맨 앞 2열 추출\n\n"
+         "**그룹_D7초과여부 (A열)**\n"
+         "- `포함` : 날짜가 [그룹] 시트 종료일+7일 이내\n"
+         "- `제외` : 날짜가 [그룹] 시트 종료일+7일 초과\n"
+         "- `#인덱스추가` : [그룹] 시트 매칭 없음\n\n"
+         "**소재_D7초과여부 (B열)**\n"
+         "- `포함` / `제외` : 위와 동일 기준, [소재] 시트 매칭 시\n"
+         "- `그룹기준적용` : [소재]는 미매칭, [그룹]은 매칭돼 그룹 기준값 사용\n"
+         "- `#인덱스추가` : [그룹] 시트조차 매칭 없음"),
+        ("카테고리매핑",
+         "- `기본 매핑` : 사업부구분 → 동일 카테고리열\n"
+         "- `사업부-연합` : USP Category 값으로 2차 매핑, 미해당 시 `수기확인`\n"
+         "- `그로서리-별도` : e-kam 예외 없음, 식품열 그대로 유지 (데이터가공 탭과의 차이점)"),
+        ("공통치환",
+         "- `Campaign Theme` : `-` → `BS`\n"
+         "- `Campaign Theme(ADEF)` : `-` → `사업부`\n"
+         "- `대구분` : 미디어구분 시트 기준 치환, 미인식 시 `#미디어구분추가필요`\n"
+         "- `USP(ADEF)` : `-` → `사업부Static`"),
+    ],
+}
+
+
+def render_guide_tabs(kind):
+    """안내 영역 — 서브탭(st.tabs) + 탭별 내용을 감싸는 테두리 박스(st.container(border=True))
+    하나로 표시한다. kind는 'new'([데이터가공] 탭) 또는 'legacy'([D7정제] 탭)."""
+    items = GUIDE_CONTENT[kind]
+    tabs = st.tabs([name for name, _ in items])
+    for tab, (_, content) in zip(tabs, items):
+        with tab:
+            with st.container(border=True):
+                st.markdown(content)
+
+
+def inject_theme_css():
+    """버튼/다운로드 버튼 등 앱 전역 초록 키컬러 보정. .streamlit/config.toml의
+    primaryColor만으로 커버되지 않는 세부 요소(비활성 다운로드 버튼 등)를 여기서 덮어씌운다."""
+    st.markdown("""
+        <style>
+        button[kind="primary"], button[data-testid="stBaseButton-primary"] {
+            background-color: #16A34A !important;
+            border-color: #16A34A !important;
+        }
+        button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover {
+            background-color: #15803D !important;
+            border-color: #15803D !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+
 def _new_run_log(step_labels):
     return {
         'steps':       [{'label': s, 'status': 'pending', 'detail': None} for s in step_labels],
@@ -887,8 +978,9 @@ def render_run_log(icon, title, log, key_prefix):
     panel_key = f"{key_prefix}_panel_{seq}"
     dl_key    = f"{key_prefix}_dl_wrap_{seq}"
     step_rules = "\n".join(
-        f".st-key-{key_prefix}_step_{i}_{seq} {{ border-bottom: 1px solid rgba(49,51,63,0.08); "
-        f"padding: 0.3rem 0; margin-bottom: 0; }}"
+        f".st-key-{key_prefix}_step_{i}_{seq} {{ "
+        + ("" if i == total - 1 else "border-bottom: 1px solid rgba(49,51,63,0.08); ")
+        + "padding: 0.3rem 0; margin-bottom: 0; }}"
         for i in range(total)
     )
 
@@ -942,21 +1034,22 @@ def render_run_log(icon, title, log, key_prefix):
                         key=f"{key_prefix}_dl_btn_{seq}",
                     )
 
-        for i, s in enumerate(steps):
-            label, color, badge_icon = STATUS_BADGE[s['status']]
-            with st.container(key=f"{key_prefix}_step_{i}_{seq}"):
-                col1, col2, col3 = st.columns([0.4, 3.6, 1], vertical_alignment="center")
-                with col1:
-                    st.markdown(badge_icon)
-                with col2:
-                    st.write(s['label'])
-                    # detail 유무와 무관하게 매번 st.caption을 호출한다(빈 문자열이라도) — 조건부로
-                    # 호출을 건너뛰면 다음 실행에서 위젯 호출 순서/개수가 달라져 Streamlit이 이전
-                    # 실행의 캡션 내용을 새 컨테이너에 그대로 흘려보내는 현상이 실측으로 확인됨.
-                    detail_text = s['detail'] or ""
-                    st.caption(f":red[{detail_text}]" if s['status'] == 'error' and detail_text else detail_text)
-                with col3:
-                    st.badge(label, color=color)
+        with st.container(key=f"{key_prefix}_steps_box_{seq}", border=True):
+            for i, s in enumerate(steps):
+                label, color, badge_icon = STATUS_BADGE[s['status']]
+                with st.container(key=f"{key_prefix}_step_{i}_{seq}"):
+                    col1, col2, col3 = st.columns([0.4, 3.6, 1], vertical_alignment="center")
+                    with col1:
+                        st.markdown(badge_icon)
+                    with col2:
+                        st.write(s['label'])
+                        # detail 유무와 무관하게 매번 st.caption을 호출한다(빈 문자열이라도) — 조건부로
+                        # 호출을 건너뛰면 다음 실행에서 위젯 호출 순서/개수가 달라져 Streamlit이 이전
+                        # 실행의 캡션 내용을 새 컨테이너에 그대로 흘려보내는 현상이 실측으로 확인됨.
+                        detail_text = s['detail'] or ""
+                        st.caption(f":red[{detail_text}]" if s['status'] == 'error' and detail_text else detail_text)
+                    with col3:
+                        st.badge(label, color=color)
 
 
 def render_new_tab():
@@ -966,9 +1059,6 @@ def render_new_tab():
     - 인덱스 파일: [캠페인] 시트(Campaign/사업부구분/유형 구분), [피드구분] 시트
       (Creative Full Name/피드 구분) — D7정제 탭의 인덱스와는 완전히 별도로 관리한다.
     """
-    st.caption("캠페인명(F열) 단독 매칭으로 사업부구분·유형 구분·피드 구분을 추출하는 "
-               "신규 가공 방식입니다. D7 초과 여부는 판정하지 않습니다.")
-
     ht1, hb1, ht2, hb2, ht3, hb3 = st.columns(
         [2.3, 0.8, 2.3, 0.8, 2.3, 0.8], vertical_alignment="center"
     )
@@ -1038,9 +1128,9 @@ def render_new_tab():
         else:
             st.info("적용된 인덱스가 없습니다. 파일 선택 후 업로드 버튼을 눌러주세요.")
 
-        st.caption("캠페인 시트: Campaign · 사업부구분 · 유형 구분\n\n"
-                   "피드구분 시트: Creative Full Name · 피드 구분\n\n"
-                   "업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
+        st.caption("업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
+
+    render_guide_tabs('new')
 
     st.divider()
 
@@ -1299,10 +1389,7 @@ def render_new_tab():
 
 
 def render_legacy_tab():
-    """[D7정제] 탭 — 기존 가공 로직/기능을 그대로 보존한 화면. 내용 변경 없음."""
-    st.caption("그룹/소재 인덱스(Campaign+Ad Group[+Ad]) 기준으로 D7 초과 여부를 함께 판정하는 "
-               "기존 가공 방식입니다. 현재는 사용하지 않지만, 추후 재사용을 위해 기능을 보존합니다.")
-
+    """[D7정제] 탭 — 기존 가공 로직은 그대로 보존하고 UI(업로드/안내/가공현황 영역)만 개선."""
     # ── 파일 업로드 (섹션별로 제목 행 오른쪽에 버튼, 업로더는 그 아래 전체 폭)
     # 제목 + 버튼 행 — 중첩 컬럼이 아닌 하나의 행(6칸)으로 구성해야 좁은 폭에서도
     # 같은 줄을 유지하며, vertical_alignment="center"로 제목 텍스트와 버튼을 수직 중앙 정렬한다.
@@ -1374,8 +1461,9 @@ def render_legacy_tab():
         else:
             st.info("적용된 인덱스가 없습니다. 파일 선택 후 업로드 버튼을 눌러주세요.")
 
-        st.caption("그룹 시트: 사업부구분 · Media · Campaign · Ad Group · 종료일\n\n"
-                   "업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
+        st.caption("업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
+
+    render_guide_tabs('legacy')
 
     st.divider()
 
@@ -1642,6 +1730,7 @@ def main():
     st.title("📊 NPS Report 데이터 가공기")
     st.caption("미디어·카테고리 CSV 로우 데이터를 업로드하면 RD 시트 형식으로 자동 가공합니다.")
 
+    inject_theme_css()
     _init_session_state()
 
     tab_new, tab_legacy = st.tabs(["🆕 데이터가공", "🗄️ D7정제"])

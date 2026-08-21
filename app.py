@@ -995,6 +995,11 @@ def inject_theme_css():
         /* 사이드바 내비게이션 버튼 — active(선택됨)는 브랜드 mint 배경 + primary-dark 텍스트 */
         [data-testid="stSidebar"] button {
             text-align:left !important; justify-content:flex-start !important; box-shadow:none !important;
+            display:flex !important;
+        }
+        [data-testid="stSidebar"] button > div,
+        [data-testid="stSidebar"] button p {
+            text-align:left !important; justify-content:flex-start !important; width:100% !important;
         }
         [data-testid="stSidebar"] button[kind="secondary"] {
             background:transparent !important; border:none !important; color:var(--text) !important; font-weight:500 !important;
@@ -1038,7 +1043,7 @@ def inject_theme_css():
 
         /* 진행 현황 패널 — 헤더(제목/진행률/다운로드) */
         .nps-pipeline-title { font-size:14px; font-weight:700; color:var(--text); margin:0; }
-        .nps-progress-mini { width:100%; max-width:140px; height:5px; border-radius:3px; background:var(--bg); overflow:hidden; margin-top:6px; }
+        .nps-progress-mini { width:120px !important; max-width:120px !important; height:5px !important; border-radius:3px; background:var(--bg); overflow:hidden; margin-top:6px; display:block; flex:none !important; }
         .nps-progress-mini > div { height:100%; background:var(--primary); transition:width .2s; }
 
         /* 가로 스텝 트래커 */
@@ -1143,15 +1148,25 @@ def render_upload_card(label, placeholder_text, file_types, uploader_key, button
         .st-key-{card_key} {{
             border-style: dashed !important; border-color: var(--border) !important;
             border-radius: var(--radius) !important;
+            background-color: var(--surface) !important;
         }}
         .st-key-{card_key} [data-testid="stFileUploaderDropzone"] {{
             background: transparent !important; border: none !important; padding: 0 !important;
         }}
         .st-key-{card_key} [data-testid="stFileUploaderDropzoneInstructions"] {{ display: none !important; }}
-        .st-key-{card_key} [data-testid="stFileUploaderDropzone"] {{ position: relative; }}
-        .st-key-{card_key} [data-testid="stFileUploaderDropzone"]::after {{
-            content: "{escape(placeholder_text)}"; display: block; margin-top: 6px;
+        .st-key-{card_key} [data-testid="stFileUploaderDropzone"] {{
+            position: relative;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: stretch !important;
+            gap: 8px;
+        }}
+        .st-key-{card_key} [data-testid="stFileUploaderDropzone"]::before {{
+            content: "{escape(placeholder_text)}"; display: block; order: -1;
             font-size: 12.5px; color: var(--text-muted); font-family: var(--sans);
+        }}
+        .st-key-{card_key} [data-testid="stFileUploaderDropzone"] > button {{
+            width: 100% !important;
         }}
         </style>
     """, unsafe_allow_html=True)
@@ -1211,8 +1226,13 @@ def render_run_log(title, log, key_prefix):
 
     st.markdown(f"""
         <style>
-        .st-key-{panel_key} {{ border-radius: var(--radius) !important; }}
-        .st-key-{dl_key} button {{ padding: 0.25rem 0.9rem; box-shadow: none; }}
+        .st-key-{panel_key} {{
+            border-radius: var(--radius) !important;
+            background-color: var(--surface) !important;
+        }}
+        .st-key-{dl_key} {{ display:flex !important; justify-content:flex-end !important; width:100% !important; }}
+        .st-key-{dl_key} > div {{ width:fit-content !important; margin-left:auto !important; }}
+        .st-key-{dl_key} button {{ padding: 0.25rem 0.9rem; box-shadow: none; width:auto !important; }}
         </style>
     """, unsafe_allow_html=True)
 
@@ -1233,7 +1253,6 @@ def render_run_log(title, log, key_prefix):
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary",
                     disabled=not can_download,
-                    use_container_width=True,
                     key=f"{key_prefix}_dl_btn_{seq}",
                 )
 

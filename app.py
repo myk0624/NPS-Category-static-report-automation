@@ -984,6 +984,13 @@ def inject_theme_css():
             font-size:11px; color:var(--text-muted); text-transform:uppercase;
             letter-spacing:.04em; padding:10px 6px 4px; font-weight:600;
         }
+        .nps-sidebar-foot {
+            margin-top:16px; border-top:1px solid var(--border); padding-top:14px;
+            font-size:11.5px; color:var(--text-muted); font-family:var(--mono);
+            display:flex; justify-content:space-between; align-items:center;
+        }
+        .nps-status-pill { display:inline-flex; align-items:center; gap:5px; }
+        .nps-status-dot { width:6px; height:6px; border-radius:50%; background:var(--primary); display:inline-block; }
 
         /* 사이드바 내비게이션 버튼 — active(선택됨)는 브랜드 mint 배경 + primary-dark 텍스트 */
         [data-testid="stSidebar"] button {
@@ -1067,25 +1074,28 @@ def inject_theme_css():
         /* 추출값 안내 서브탭(st.tabs) — 기본 테마색(초록) 대신 브랜드 레드로 오버라이드.
            BaseWeb Tabs는 활성 인디케이터를 별도 div([data-baseweb="tab-highlight"])로
            그리고, 탭 텍스트 활성/비활성 색상도 기본 테마 primaryColor를 그대로 따라가므로
-           여기서 명시적으로 다시 지정해야 한다. */
+           여기서 명시적으로 다시 지정해야 한다. 내부 텍스트가 <p>로 감싸지는지 여부가
+           Streamlit 버전마다 달라질 수 있어 자손 전체(*)를 타겟팅해 안전하게 덮어쓴다. */
         [data-baseweb="tab-highlight"] {
             background-color: var(--primary) !important;
         }
         [data-baseweb="tab-border"] {
             background-color: var(--border) !important;
         }
-        button[data-baseweb="tab"] {
+        [data-baseweb="tab-list"] button[data-baseweb="tab"] {
             font-family: var(--sans) !important;
-        }
-        button[data-baseweb="tab"] p {
             color: var(--text-muted) !important;
-            font-weight: 600 !important;
-            font-size: 13px !important;
         }
-        button[data-baseweb="tab"][aria-selected="true"] p {
+        [data-baseweb="tab-list"] button[data-baseweb="tab"] * {
+            color: var(--text-muted) !important;
+        }
+        [data-baseweb="tab-list"] button[data-baseweb="tab"][aria-selected="true"],
+        [data-baseweb="tab-list"] button[data-baseweb="tab"][aria-selected="true"] * {
             color: var(--primary-dark) !important;
+            font-weight: 600 !important;
         }
-        button[data-baseweb="tab"]:hover p {
+        [data-baseweb="tab-list"] button[data-baseweb="tab"]:hover,
+        [data-baseweb="tab-list"] button[data-baseweb="tab"]:hover * {
             color: var(--primary-dark) !important;
         }
         </style>
@@ -1874,6 +1884,14 @@ def render_sidebar_nav():
                          use_container_width=True):
                 st.session_state['nav_page'] = key
                 st.rerun()
+
+        st.markdown(
+            '<div class="nps-sidebar-foot">'
+            '<span class="nps-status-pill"><span class="nps-status-dot"></span>준비됨</span>'
+            '<span>v1.0</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
     return st.session_state['nav_page']
 

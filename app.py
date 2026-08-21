@@ -1063,6 +1063,31 @@ def inject_theme_css():
             padding: 2px 6px;
             border-radius: 5px;
         }
+
+        /* 추출값 안내 서브탭(st.tabs) — 기본 테마색(초록) 대신 브랜드 레드로 오버라이드.
+           BaseWeb Tabs는 활성 인디케이터를 별도 div([data-baseweb="tab-highlight"])로
+           그리고, 탭 텍스트 활성/비활성 색상도 기본 테마 primaryColor를 그대로 따라가므로
+           여기서 명시적으로 다시 지정해야 한다. */
+        [data-baseweb="tab-highlight"] {
+            background-color: var(--primary) !important;
+        }
+        [data-baseweb="tab-border"] {
+            background-color: var(--border) !important;
+        }
+        button[data-baseweb="tab"] {
+            font-family: var(--sans) !important;
+        }
+        button[data-baseweb="tab"] p {
+            color: var(--text-muted) !important;
+            font-weight: 600 !important;
+            font-size: 13px !important;
+        }
+        button[data-baseweb="tab"][aria-selected="true"] p {
+            color: var(--primary-dark) !important;
+        }
+        button[data-baseweb="tab"]:hover p {
+            color: var(--primary-dark) !important;
+        }
         </style>
     """, unsafe_allow_html=True)
 

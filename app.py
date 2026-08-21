@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
+from html import escape
 import traceback
 import csv
 import time
@@ -186,6 +187,9 @@ USP_TO_CATEGORY_GROUP = {
     'KID':     '키즈',
 }
 GENERIC_CATEGORY_COLS = ('카테고리 구매 unique', '카테고리 구매 quantity', '카테고리 구매 price')
+
+# '사업부-연합' + USP Category='ALL'인 행이 동일 원본 값을 복사받는 4개 카테고리 그룹.
+ALL_UNION_USP_GROUPS = ['리빙', '키즈', '펫', '자동차/공구']
 
 
 def category_group_cols(group_name):
@@ -459,6 +463,10 @@ def process_category_step3(df, biz_list, type_list=None):
     대신 'e-kam'을 강제 적용한다. type_list=None([D7정제] 탭은 유형 구분 개념이 없어 항상
     None으로 호출됨)이면 이 예외는 적용되지 않고 기존 동작(사업부-그로서리-별도 → 식품)을
     그대로 따른다.
+
+    사업부구분='사업부-연합' & USP Category='ALL'인 행은 단일 그룹이 아니라
+    ALL_UNION_USP_GROUPS(리빙/키즈/펫/자동차·공구) 4개 그룹의 unique/quantity/price 열
+    전부에 원본 '카테고리 구매' 3열 값을 그대로 복사한다(수기확인 플래그 없음).
     Returns (df, manual_bool_array).
     """
     n      = len(df)
@@ -481,9 +489,23 @@ def process_category_step3(df, biz_list, type_list=None):
             group_name = 'e-kam'  # [데이터가공] 탭 전용 예외: 그로서리-별도 + 카탈로그 → e-kam
         elif biz_str == '사업부-연합':
             usp = str(row_val(row, C_AV, '')).strip().upper()
-            group_name = USP_TO_CATEGORY_GROUP.get(usp)
-            if group_name is None:
-                manual[pos] = True
+            if usp == 'ALL':
+                src_u = row[generic_u] if generic_u in df.columns else np.nan
+                src_q = row[generic_q] if generic_q in df.columns else np.nan
+                src_p = row[generic_p] if generic_p in df.columns else np.nan
+                for union_group in ALL_UNION_USP_GROUPS:
+                    gu, gq, gp = category_group_cols(union_group)
+                    if gu in df.columns:
+                        df.iloc[pos, df.columns.get_loc(gu)] = src_u
+                    if gq in df.columns:
+                        df.iloc[pos, df.columns.get_loc(gq)] = src_q
+                    if gp in df.columns:
+                        df.iloc[pos, df.columns.get_loc(gp)] = src_p
+                group_name = None  # 카테고리 구매(총계) 열은 원본 값 그대로 유지
+            else:
+                group_name = USP_TO_CATEGORY_GROUP.get(usp)
+                if group_name is None:
+                    manual[pos] = True
         elif biz_str:
             group_name = BIZ_TO_CATEGORY_GROUP.get(biz_str)
             if group_name is None:
@@ -839,14 +861,6 @@ CATEGORY_STEP_LABELS_V2 = [
     '엑셀 파일 생성',
 ]
 
-STATUS_BADGE = {
-    'done':    ('완료',   'green', '✅'),
-    'error':   ('오류',   'red',   '❌'),
-    'pending': ('대기',   'gray',  '⚪'),
-    'running': ('진행중', 'blue',  '🔵'),
-}
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # 안내 영역 — [데이터가공]/[D7정제] 탭 공통 UI. 탭별 서브탭 이름과 내용만 다르다.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -870,6 +884,7 @@ GUIDE_CONTENT = {
         ("카테고리매핑",
          "- `기본 매핑` : 사업부구분 → 동일 카테고리열 (가구→가구열, 그로서리→식품열 등)\n"
          "- `사업부-연합` : USP Category 값으로 2차 매핑, 미해당 시 `수기확인`\n"
+         "- `사업부-연합 + ALL` : USP Category가 `ALL`이면 리빙·키즈·펫·자동차/공구 4개 카테고리 그룹에 동일 값 복사\n"
          "- `그로서리-별도+카탈로그` : 식품열 대신 `e-kam`열로 치환"),
         ("공통치환",
          "- `Campaign Theme` : `-` → `BS`\n"
@@ -900,6 +915,7 @@ GUIDE_CONTENT = {
         ("카테고리매핑",
          "- `기본 매핑` : 사업부구분 → 동일 카테고리열\n"
          "- `사업부-연합` : USP Category 값으로 2차 매핑, 미해당 시 `수기확인`\n"
+         "- `사업부-연합 + ALL` : USP Category가 `ALL`이면 리빙·키즈·펫·자동차/공구 4개 카테고리 그룹에 동일 값 복사\n"
          "- `그로서리-별도` : e-kam 예외 없음, 식품열 그대로 유지 (데이터가공 탭과의 차이점)"),
         ("공통치환",
          "- `Campaign Theme` : `-` → `BS`\n"
@@ -910,29 +926,142 @@ GUIDE_CONTENT = {
 }
 
 
-def render_guide_tabs(kind):
-    """안내 영역 — 서브탭(st.tabs) + 탭별 내용을 감싸는 테두리 박스(st.container(border=True))
-    하나로 표시한다. kind는 'new'([데이터가공] 탭) 또는 'legacy'([D7정제] 탭)."""
-    items = GUIDE_CONTENT[kind]
-    tabs = st.tabs([name for name, _ in items])
-    for tab, (_, content) in zip(tabs, items):
-        with tab:
-            with st.container(border=True):
-                st.markdown(content)
+def render_extract_guide(kind):
+    """추출값 안내 영역 — "패널"(제목 + 설명) 안에 서브탭(st.tabs) + 탭별 내용을 감싸는
+    테두리 박스(st.container(border=True))로 표시한다. 각 탭 내용의 백틱(`) 코드 서식은
+    inject_theme_css()에서 레드 톤 칩 스타일로 전역 오버라이드된다.
+    kind는 'new'([데이터가공] 탭) 또는 'legacy'([D7정제] 탭)."""
+    with st.container(border=True):
+        st.markdown("#### 추출값 안내")
+        st.caption("가공 과정에서 나오는 추출값이 어떤 의미인지 설명합니다")
+        items = GUIDE_CONTENT[kind]
+        tabs = st.tabs([name for name, _ in items])
+        for tab, (_, content) in zip(tabs, items):
+            with tab:
+                with st.container(border=True):
+                    st.markdown(content)
 
 
 def inject_theme_css():
-    """버튼/다운로드 버튼 등 앱 전역 초록 키컬러 보정. .streamlit/config.toml의
-    primaryColor만으로 커버되지 않는 세부 요소(비활성 다운로드 버튼 등)를 여기서 덮어씌운다."""
+    """디자인 레퍼런스(design_concept_v8) 기준 전역 색상/폰트/컴포넌트 스타일 주입.
+    브랜드 레드(--primary) 계열 색상, Noto Sans KR 본문 폰트, IBM Plex Mono 데이터성 폰트를
+    :root CSS 변수로 정의하고 사이드바 내비게이션·버튼·프로그레스바·단계 트래커·추출값 안내
+    칩(코드 서식) 등 세부 요소에 일관 적용한다. .streamlit/config.toml의 theme 설정과 함께
+    동작하며, config.toml만으로 커버되지 않는 세부 요소를 여기서 덮어씌운다."""
     st.markdown("""
         <style>
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
+
+        :root {
+            --bg: #F6F8F5;
+            --surface: #FFFFFF;
+            --primary: #AC332B;
+            --primary-dark: #7E241E;
+            --mint: #F8E9E7;
+            --mint-strong: #F0CFC9;
+            --text: #1B2420;
+            --text-muted: #6E766F;
+            --border: #E3E7E1;
+            --radius: 10px;
+            --mono: 'IBM Plex Mono', monospace;
+            --sans: 'Noto Sans KR', -apple-system, sans-serif;
+        }
+
+        html, body, [class*="css"] { font-family: var(--sans) !important; }
+        .stApp { background: var(--bg); }
+        [data-testid="stAppViewContainer"] { font-family: var(--sans); }
+
+        /* 사이드바 브랜드 블록 */
+        .nps-brand { display:flex; align-items:center; gap:10px; padding:2px 4px 18px; }
+        .nps-brand-mark {
+            width:32px; height:32px; border-radius:8px; background:var(--primary); color:#fff;
+            display:flex; align-items:center; justify-content:center;
+            font-family:var(--mono); font-weight:500; font-size:13px; flex:0 0 auto;
+        }
+        .nps-brand-name { font-weight:700; font-size:14.5px; line-height:1.2; color:var(--text); }
+        .nps-brand-sub { font-size:11px; color:var(--text-muted); font-family:var(--mono); }
+        .nps-nav-group-label {
+            font-size:11px; color:var(--text-muted); text-transform:uppercase;
+            letter-spacing:.04em; padding:10px 6px 4px; font-weight:600;
+        }
+
+        /* 사이드바 내비게이션 버튼 — active(선택됨)는 브랜드 mint 배경 + primary-dark 텍스트 */
+        [data-testid="stSidebar"] button {
+            text-align:left !important; justify-content:flex-start !important; box-shadow:none !important;
+        }
+        [data-testid="stSidebar"] button[kind="secondary"] {
+            background:transparent !important; border:none !important; color:var(--text) !important; font-weight:500 !important;
+        }
+        [data-testid="stSidebar"] button[kind="secondary"]:hover { background:var(--bg) !important; }
+        [data-testid="stSidebar"] button[kind="primary"] {
+            background:var(--mint) !important; color:var(--primary-dark) !important;
+            border:none !important; font-weight:600 !important;
+        }
+        [data-testid="stSidebar"] button[kind="primary"]:hover { background:var(--mint-strong) !important; }
+
+        /* 본문 영역 버튼 — 브랜드 레드 채움(primary) / 테두리만 있는 무채색(secondary) */
         button[kind="primary"], button[data-testid="stBaseButton-primary"] {
-            background-color: #16A34A !important;
-            border-color: #16A34A !important;
+            background-color: var(--primary) !important;
+            border-color: var(--primary) !important;
+            color: #fff !important;
         }
         button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover {
-            background-color: #15803D !important;
-            border-color: #15803D !important;
+            background-color: var(--primary-dark) !important;
+            border-color: var(--primary-dark) !important;
+        }
+        button[kind="secondary"], button[data-testid="stBaseButton-secondary"] {
+            background-color: var(--surface) !important;
+            border-color: var(--border) !important;
+            color: var(--text-muted) !important;
+        }
+        button:disabled, button:disabled:hover {
+            background-color: var(--bg) !important;
+            border-color: var(--bg) !important;
+            color: var(--text-muted) !important;
+        }
+
+        [data-testid="stProgressBar"] > div > div { background-color: var(--primary) !important; }
+
+        /* 업로드 카드 */
+        .nps-upload-label { font-size:13.5px; font-weight:700; color:var(--text); margin-bottom:8px; }
+        .nps-upload-placeholder { font-size:12.5px; color:var(--text-muted); margin:8px 0 10px; }
+        .nps-upload-filename {
+            font-size:12px; color:var(--text); font-family:var(--mono); margin:8px 0 10px; word-break:break-all;
+        }
+
+        /* 진행 현황 패널 — 헤더(제목/진행률/다운로드) */
+        .nps-pipeline-title { font-size:14px; font-weight:700; color:var(--text); margin:0; }
+        .nps-progress-mini { width:100%; max-width:140px; height:5px; border-radius:3px; background:var(--bg); overflow:hidden; margin-top:6px; }
+        .nps-progress-mini > div { height:100%; background:var(--primary); transition:width .2s; }
+
+        /* 가로 스텝 트래커 */
+        .nps-track { display:flex; align-items:flex-start; justify-content:space-between; position:relative; gap:4px; margin-top:14px; flex-wrap:wrap; }
+        .nps-track::before {
+            content:""; position:absolute; top:14px; left:4%; right:4%; height:1px;
+            background-image:linear-gradient(to right, var(--border) 50%, transparent 50%);
+            background-size:8px 1px; z-index:0;
+        }
+        .nps-node { display:flex; flex-direction:column; align-items:center; gap:6px; flex:1 1 0; min-width:96px; position:relative; z-index:1; background:var(--surface); padding:0 2px; }
+        .nps-node-dot {
+            width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+            font-family:var(--mono); font-size:11px; font-weight:500; border:1.5px solid var(--border);
+            background:var(--surface); color:var(--text-muted);
+        }
+        .nps-node.done .nps-node-dot { background:var(--primary); border-color:var(--primary); color:#fff; }
+        .nps-node.active .nps-node-dot { border-color:var(--primary); color:var(--primary-dark); background:var(--mint); }
+        .nps-node.error .nps-node-dot { border-color:#B91C1C; color:#fff; background:#B91C1C; }
+        .nps-node-label { font-size:11.5px; font-weight:600; text-align:center; color:var(--text); line-height:1.35; }
+        .nps-node-sub { font-size:10.5px; color:var(--text-muted); text-align:center; font-family:var(--mono); }
+        .nps-node.error .nps-node-sub { color:#B91C1C; }
+
+        /* 추출값 안내 — 백틱 코드 서식을 레드 톤 칩으로 (라인 전체가 아닌 용어에만 배경 적용) */
+        [data-testid="stMarkdownContainer"] code {
+            font-family: var(--mono) !important;
+            font-weight: 500;
+            color: var(--primary-dark) !important;
+            background: var(--mint) !important;
+            padding: 2px 6px;
+            border-radius: 5px;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -947,11 +1076,67 @@ def _new_run_log(step_labels):
     }
 
 
-def render_run_log(icon, title, log, key_prefix):
-    """가공 내역 패널: 제목 행(제목 + 진행률 + 다운로드 버튼) + 단계별 상태 리스트(라인 구분,
-    배경 없음). 다운로드 버튼은 가공 완료 전엔 회색 비활성화, 완료 후엔 초록색 활성화로
-    표시한다(Streamlit 기본 type="primary"는 앱 테마색(빨강)이라 st.container(key=)로 감싸서
-    CSS를 직접 덮어씌운다). 전체적으로 폰트를 줄이고 여백을 좁혀 compact하게 구성한다.
+STEP_STATUS_SUB = {
+    'pending': '처리전',
+    'running': '처리중',
+    'done':    '완료',
+    'error':   '오류',
+}
+
+
+def render_upload_card(label, placeholder_text, file_types, uploader_key, button_key, is_index=False):
+    """업로드 카드 하나(라벨 + 파일 업로더 + 조건부 버튼)를 그린다.
+
+    - 파일 미업로드 상태: 버튼 = "Upload"(테두리만 있는 무채색 스타일), 비활성화
+    - 파일 업로드 후: 버튼 = "가공"(미디어/카테고리) 또는 "완료"(인덱스), 브랜드 레드 채움
+    Returns (uploaded_file, button_clicked).
+    """
+    card_key = f"upload_card_{uploader_key}"
+    st.markdown(
+        f'<style>.st-key-{card_key} {{ border-style: dashed !important; '
+        f'border-color: var(--border) !important; border-radius: var(--radius) !important; }}</style>',
+        unsafe_allow_html=True,
+    )
+    with st.container(key=card_key, border=True):
+        st.markdown(f'<div class="nps-upload-label">{escape(label)}</div>', unsafe_allow_html=True)
+        uploaded = st.file_uploader(f"{label} 업로드", type=file_types, key=uploader_key,
+                                     label_visibility='collapsed')
+        if uploaded is not None:
+            st.markdown(f'<div class="nps-upload-filename">{escape(uploaded.name)}</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="nps-upload-placeholder">{escape(placeholder_text)}</div>',
+                        unsafe_allow_html=True)
+
+        if uploaded is not None:
+            btn_label, btn_type = ("완료" if is_index else "가공"), "primary"
+        else:
+            btn_label, btn_type = "Upload", "secondary"
+        clicked = st.button(btn_label, key=button_key, type=btn_type,
+                             use_container_width=True, disabled=uploaded is None)
+    return uploaded, clicked
+
+
+def render_step_track_html(steps):
+    """단계 진행 상태를 가로 스텝 트래커(노드 연결) HTML로 그린다. 라벨/상태 문자열은 모두
+    코드 내부에서 정의된 고정 텍스트이므로 escape 없이 그대로 삽입해도 안전하다(사용자 입력이
+    섞이는 detail 텍스트는 여기서 렌더링하지 않고 호출부에서 st.caption으로 별도 표시한다)."""
+    state_cls = {'pending': '', 'running': 'active', 'done': 'done', 'error': 'error'}
+    nodes = []
+    for i, s in enumerate(steps):
+        cls = state_cls.get(s['status'], '')
+        sub = STEP_STATUS_SUB.get(s['status'], '처리전')
+        nodes.append(f'''<div class="nps-node {cls}">
+            <div class="nps-node-dot">{i + 1}</div>
+            <div class="nps-node-label">{s['label']}</div>
+            <div class="nps-node-sub">{sub}</div>
+        </div>''')
+    return f'<div class="nps-track">{"".join(nodes)}</div>'
+
+
+def render_run_log(title, log, key_prefix):
+    """진행 현황 패널: 제목 + 우측 상단 자체 진행률 바/다운로드 버튼, 그 아래 가로 스텝
+    트래커(노드 연결) + 상세 메시지(있는 단계만 caption으로 표시)로 구성한다.
 
     같은 스크립트 실행 안에서 이 함수가 여러 번 호출되면(단계 진행에 따라 실시간으로
     다시 그릴 때) 컨테이너 key를 고정값으로 두면 Streamlit이 첫 호출 내용에서 갱신을
@@ -959,16 +1144,13 @@ def render_run_log(icon, title, log, key_prefix):
 
     이 일련번호는 반드시 st.session_state에 저장해야 한다 — log 딕셔너리에 저장하면
     (예: log['_seq']) 새 가공을 시작할 때마다 _new_run_log()가 완전히 새 log를 만들면서
-    번호가 다시 0부터 시작해, 이전 실행 때와 동일한 key가 재사용된다. 그 결과 이전 실행에서
-    렌더링된 단계별 상세 텍스트(예: 잘못된 파일 형식 오류 메시지)가 새 실행에서 그 텍스트를
-    다시 쓰지 않아도(caption을 호출 안 해도) 화면에 그대로 눌어붙어 있는 버그가 실측으로
-    확인됐다. session_state는 실행 간에도 유지되므로 여기 저장해야 매 호출이 진짜 유일한
-    key를 갖는다."""
+    번호가 다시 0부터 시작해, 이전 실행 때와 동일한 key가 재사용된다. session_state는
+    실행 간에도 유지되므로 여기 저장해야 매 호출이 진짜 유일한 key를 갖는다."""
     steps       = log['steps']
     total       = len(steps)
     done_n      = sum(1 for s in steps if s['status'] == 'done')
     has_error   = any(s['status'] == 'error' for s in steps)
-    progress    = done_n / total if total else 0.0
+    progress_pct = round(done_n / total * 100) if total else 0
     can_download = bool(log['excel_bytes']) and not has_error
 
     seq_state_key = f"_{key_prefix}_render_seq"
@@ -977,79 +1159,42 @@ def render_run_log(icon, title, log, key_prefix):
 
     panel_key = f"{key_prefix}_panel_{seq}"
     dl_key    = f"{key_prefix}_dl_wrap_{seq}"
-    step_rules = "\n".join(
-        f".st-key-{key_prefix}_step_{i}_{seq} {{ "
-        + ("" if i == total - 1 else "border-bottom: 1px solid rgba(49,51,63,0.08); ")
-        + "padding: 0.3rem 0; margin-bottom: 0; }}"
-        for i in range(total)
-    )
 
     st.markdown(f"""
         <style>
-        .st-key-{panel_key} {{ font-size: 0.85rem; }}
-        .st-key-{panel_key} h4 {{ font-size: 1rem; margin: 0; padding: 0; }}
-        .st-key-{panel_key} [data-testid="stCaptionContainer"] p {{ font-size: 0.78rem; }}
-        .st-key-{panel_key} [data-testid="stProgress"] {{ margin-top: 0.4rem; }}
-        .st-key-{panel_key} [data-testid="stProgressBar"] > div > div {{ height: 4px !important; }}
-        .st-key-{panel_key} span[data-testid="stBadge"] {{
-            font-size: 0.72rem !important;
-            padding: 0.05rem 0.5rem !important;
-        }}
-        {step_rules}
-        .st-key-{dl_key} button {{
-            padding: 0.25rem 0.75rem;
-            box-shadow: none;
-        }}
-        .st-key-{dl_key} button:disabled {{
-            background-color: #f1f5f9 !important;
-            color: #b0b8c1 !important;
-            border-color: #f1f5f9 !important;
-        }}
-        .st-key-{dl_key} button:not(:disabled) {{
-            background-color: #86efac !important;
-            color: #14532d !important;
-            border-color: #86efac !important;
-        }}
+        .st-key-{panel_key} {{ border-radius: var(--radius) !important; }}
+        .st-key-{dl_key} button {{ padding: 0.25rem 0.9rem; box-shadow: none; }}
         </style>
     """, unsafe_allow_html=True)
 
-    with st.container(key=panel_key):
-        head_l, head_r = st.columns([2.2, 2.8], vertical_alignment="center")
+    with st.container(key=panel_key, border=True):
+        head_l, head_r = st.columns([2.4, 1], vertical_alignment="center")
         with head_l:
-            st.markdown(f"#### {icon} {title}")
+            st.markdown(
+                f'<div class="nps-pipeline-title">{title}</div>'
+                f'<div class="nps-progress-mini"><div style="width:{progress_pct}%;"></div></div>',
+                unsafe_allow_html=True,
+            )
         with head_r:
-            c2, c3 = st.columns([2, 1.2], vertical_alignment="center")
-            with c2:
-                st.progress(progress)
-            with c3:
-                with st.container(key=dl_key):
-                    st.download_button(
-                        "📥 다운로드",
-                        data=log['excel_bytes'] or b'',
-                        file_name=log['excel_fname'] or 'download.xlsx',
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary",
-                        disabled=not can_download,
-                        use_container_width=True,
-                        key=f"{key_prefix}_dl_btn_{seq}",
-                    )
+            with st.container(key=dl_key):
+                st.download_button(
+                    "다운로드",
+                    data=log['excel_bytes'] or b'',
+                    file_name=log['excel_fname'] or 'download.xlsx',
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    disabled=not can_download,
+                    use_container_width=True,
+                    key=f"{key_prefix}_dl_btn_{seq}",
+                )
 
-        with st.container(key=f"{key_prefix}_steps_box_{seq}", border=True):
-            for i, s in enumerate(steps):
-                label, color, badge_icon = STATUS_BADGE[s['status']]
-                with st.container(key=f"{key_prefix}_step_{i}_{seq}"):
-                    col1, col2, col3 = st.columns([0.4, 3.6, 1], vertical_alignment="center")
-                    with col1:
-                        st.markdown(badge_icon)
-                    with col2:
-                        st.write(s['label'])
-                        # detail 유무와 무관하게 매번 st.caption을 호출한다(빈 문자열이라도) — 조건부로
-                        # 호출을 건너뛰면 다음 실행에서 위젯 호출 순서/개수가 달라져 Streamlit이 이전
-                        # 실행의 캡션 내용을 새 컨테이너에 그대로 흘려보내는 현상이 실측으로 확인됨.
-                        detail_text = s['detail'] or ""
-                        st.caption(f":red[{detail_text}]" if s['status'] == 'error' and detail_text else detail_text)
-                    with col3:
-                        st.badge(label, color=color)
+        st.markdown(render_step_track_html(steps), unsafe_allow_html=True)
+
+        # 상세 메시지(detail)가 있는 단계만 캡션으로 표시 — detail 텍스트는 업로드 파일명 등
+        # 사용자 입력을 포함할 수 있어 raw HTML이 아닌 st.caption(자체 escape)으로 렌더링한다.
+        for s in steps:
+            if s['detail']:
+                st.caption(f":red[{s['detail']}]" if s['status'] == 'error' else s['detail'])
 
 
 def render_new_tab():
@@ -1059,88 +1204,52 @@ def render_new_tab():
     - 인덱스 파일: [캠페인] 시트(Campaign/사업부구분/유형 구분), [피드구분] 시트
       (Creative Full Name/피드 구분) — D7정제 탭의 인덱스와는 완전히 별도로 관리한다.
     """
-    ht1, hb1, ht2, hb2, ht3, hb3 = st.columns(
-        [2.3, 0.8, 2.3, 0.8, 2.3, 0.8], vertical_alignment="center"
-    )
-    with ht1:
-        st.markdown("### 📁 미디어 파일")
-    with hb1:
-        run_media2 = st.button("가공", key='media_btn2', type="primary", use_container_width=True)
-
-    with ht2:
-        st.markdown("### 📁 카테고리 파일")
-    with hb2:
-        run_cat2 = st.button("가공", key='cat_btn2', type="primary", use_container_width=True)
-
-    with ht3:
-        st.markdown("### 🗂️ 인덱스 파일")
-    with hb3:
-        run_index2 = st.button("업로드", key='index_btn2', type="primary", use_container_width=True)
-
-    u1, u2, u3 = st.columns(3)
+    u1, u2, u3 = st.columns(3, gap="medium")
     with u1:
-        media_file2 = st.file_uploader("미디어 csv 업로드", type=['csv'], key='mf2',
-                                        label_visibility='collapsed')
+        media_file2, run_media2 = render_upload_card(
+            "01 · 미디어 파일", "csv 업데이트", ['csv'], 'mf2', 'media_btn2', is_index=False)
     with u2:
-        cat_file2 = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf2',
-                                      label_visibility='collapsed')
+        cat_file2, run_cat2 = render_upload_card(
+            "02 · 카테고리 파일", "csv 업데이트", ['csv'], 'cf2', 'cat_btn2', is_index=False)
     with u3:
-        index_file2 = st.file_uploader("인덱스 xlsx 업로드", type=['xlsx', 'xls'], key='ixf2',
-                                        label_visibility='collapsed')
+        index_file2, run_index2 = render_upload_card(
+            "03 · 인덱스 파일", "xlsx 업데이트", ['xlsx', 'xls'], 'ixf2', 'index_btn2', is_index=True)
 
-    s1, s2, s3 = st.columns(3)
-    with s1:
-        if media_file2:
-            st.success(f"✅ {media_file2.name}")
-    with s2:
-        if cat_file2:
-            st.success(f"✅ {cat_file2.name}")
-    with s3:
-        if run_index2:
-            if not index_file2:
-                st.warning("인덱스 파일을 먼저 선택해주세요.")
-            else:
-                try:
-                    campaign_df, feed_df, media_df = parse_index_file_v2(index_file2)
-                    missing = [c for c in INDEX2_CAMPAIGN_REQUIRED if c not in campaign_df.columns]
-                    if missing:
-                        st.error(f"인덱스 [캠페인] 시트에 필요한 열이 없습니다: {', '.join(missing)}")
-                    else:
-                        if feed_df is None or any(c not in feed_df.columns for c in INDEX2_FEED_REQUIRED):
-                            st.warning("인덱스 [피드구분] 시트를 찾지 못했거나 필요한 열이 없습니다. "
-                                       "유형 구분이 '카탈로그'인 행은 모두 '#피드구분추가필요'로 표시됩니다.")
-                        st.session_state['index2_campaign_df'] = campaign_df
-                        st.session_state['index2_feed_df']     = feed_df
-                        st.session_state['index2_media_df']    = media_df
-                        st.session_state['index2_filename']    = index_file2.name
-                        st.session_state['index2_uploaded_at'] = pd.Timestamp.now()
-                except Exception as e:
-                    st.error(f"인덱스 파일 읽기 오류: {e}")
-
-        if st.session_state['index2_campaign_df'] is not None:
-            up_at = st.session_state['index2_uploaded_at']
-            st.success(f"✅ 현재 적용 중인 인덱스: **{st.session_state['index2_filename']}** "
-                       f"({up_at.strftime('%Y-%m-%d %H:%M')})")
-            camp_n = len(st.session_state['index2_campaign_df'])
-            feed_n = len(st.session_state['index2_feed_df']) \
-                if st.session_state['index2_feed_df'] is not None else 0
-            st.caption(f"캠페인 시트 {camp_n}건 · 피드구분 시트 {feed_n}건")
+    if run_index2:
+        if not index_file2:
+            st.warning("인덱스 파일을 먼저 선택해주세요.")
         else:
-            st.info("적용된 인덱스가 없습니다. 파일 선택 후 업로드 버튼을 눌러주세요.")
+            try:
+                campaign_df, feed_df, media_df = parse_index_file_v2(index_file2)
+                missing = [c for c in INDEX2_CAMPAIGN_REQUIRED if c not in campaign_df.columns]
+                if missing:
+                    st.error(f"인덱스 [캠페인] 시트에 필요한 열이 없습니다: {', '.join(missing)}")
+                else:
+                    if feed_df is None or any(c not in feed_df.columns for c in INDEX2_FEED_REQUIRED):
+                        st.warning("인덱스 [피드구분] 시트를 찾지 못했거나 필요한 열이 없습니다. "
+                                   "유형 구분이 '카탈로그'인 행은 모두 '#피드구분추가필요'로 표시됩니다.")
+                    st.session_state['index2_campaign_df'] = campaign_df
+                    st.session_state['index2_feed_df']     = feed_df
+                    st.session_state['index2_media_df']    = media_df
+                    st.session_state['index2_filename']    = index_file2.name
+                    st.session_state['index2_uploaded_at'] = pd.Timestamp.now()
+            except Exception as e:
+                st.error(f"인덱스 파일 읽기 오류: {e}")
 
-        st.caption("업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
-
-    render_guide_tabs('new')
-
-    st.divider()
+    if st.session_state['index2_campaign_df'] is not None:
+        up_at = st.session_state['index2_uploaded_at']
+        st.success(f"✅ 현재 적용 중인 인덱스: **{st.session_state['index2_filename']}** "
+                   f"({up_at.strftime('%Y-%m-%d %H:%M')})")
+        camp_n = len(st.session_state['index2_campaign_df'])
+        feed_n = len(st.session_state['index2_feed_df']) \
+            if st.session_state['index2_feed_df'] is not None else 0
+        st.caption(f"캠페인 시트 {camp_n}건 · 피드구분 시트 {feed_n}건 · 업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
+    else:
+        st.info("적용된 인덱스가 없습니다. 파일 선택 후 [완료] 버튼을 눌러주세요.")
 
     campaign_lookup    = build_campaign_lookup_v2(st.session_state['index2_campaign_df'])
     feed_lookup        = build_feed_lookup_v2(st.session_state['index2_feed_df'])
     media_group_lookup = build_media_group_lookup(st.session_state['index2_media_df'])
-
-    if st.session_state['media_log2'] is None and st.session_state['cat_log2'] is None \
-            and not run_media2 and not run_cat2:
-        st.info("파일을 업로드한 후 각 섹션의 버튼을 눌러주세요.")
 
     if run_cat2 and cat_file2 and not campaign_lookup:
         st.warning("⚠️ 적용된 인덱스가 없어 사업부구분을 판별할 수 없습니다. "
@@ -1152,15 +1261,13 @@ def render_new_tab():
 
     def _refresh_media2(log, pause=0.15):
         with media_slot2.container():
-            render_run_log("📊", "미디어 가공 내역", log, key_prefix="media2")
+            render_run_log("미디어 파일 가공", log, key_prefix="media2")
         if pause:
             time.sleep(pause)
 
     def _refresh_cat2(log, pause=0.15):
         with cat_slot2.container():
-            if st.session_state['media_log2'] is not None:
-                st.divider()
-            render_run_log("🛒", "카테고리 가공 내역", log, key_prefix="cat2")
+            render_run_log("카테고리 파일 가공", log, key_prefix="cat2")
         if pause:
             time.sleep(pause)
 
@@ -1168,6 +1275,7 @@ def render_new_tab():
     if run_media2:
         if not media_file2:
             st.warning("미디어 파일을 업로드해주세요.")
+            _refresh_media2(st.session_state['media_log2'] or _new_run_log(MEDIA_STEP_LABELS_V2), pause=0)
         else:
             st.session_state['media_log2'] = None
             log = _new_run_log(MEDIA_STEP_LABELS_V2)
@@ -1263,13 +1371,14 @@ def render_new_tab():
                 _refresh_media2(log, pause=0)
 
             st.session_state['media_log2'] = log
-    elif st.session_state['media_log2'] is not None:
-        _refresh_media2(st.session_state['media_log2'], pause=0)
+    else:
+        _refresh_media2(st.session_state['media_log2'] or _new_run_log(MEDIA_STEP_LABELS_V2), pause=0)
 
     # ────────────────────────────── 카테고리 가공 (신규) ─────────────────────────
     if run_cat2:
         if not cat_file2:
             st.warning("카테고리 파일을 업로드해주세요.")
+            _refresh_cat2(st.session_state['cat_log2'] or _new_run_log(CATEGORY_STEP_LABELS_V2), pause=0)
         else:
             st.session_state['cat_log2'] = None
             log = _new_run_log(CATEGORY_STEP_LABELS_V2)
@@ -1384,96 +1493,57 @@ def render_new_tab():
                 _refresh_cat2(log, pause=0)
 
             st.session_state['cat_log2'] = log
-    elif st.session_state['cat_log2'] is not None:
-        _refresh_cat2(st.session_state['cat_log2'], pause=0)
+    else:
+        _refresh_cat2(st.session_state['cat_log2'] or _new_run_log(CATEGORY_STEP_LABELS_V2), pause=0)
+
+    render_extract_guide('new')
 
 
 def render_legacy_tab():
     """[D7정제] 탭 — 기존 가공 로직은 그대로 보존하고 UI(업로드/안내/가공현황 영역)만 개선."""
-    # ── 파일 업로드 (섹션별로 제목 행 오른쪽에 버튼, 업로더는 그 아래 전체 폭)
-    # 제목 + 버튼 행 — 중첩 컬럼이 아닌 하나의 행(6칸)으로 구성해야 좁은 폭에서도
-    # 같은 줄을 유지하며, vertical_alignment="center"로 제목 텍스트와 버튼을 수직 중앙 정렬한다.
-    ht1, hb1, ht2, hb2, ht3, hb3 = st.columns(
-        [2.3, 0.8, 2.3, 0.8, 2.3, 0.8], vertical_alignment="center"
-    )
-    with ht1:
-        st.markdown("### 📁 미디어 파일")
-    with hb1:
-        run_media = st.button("가공", key='media_btn', type="primary", use_container_width=True)
-
-    with ht2:
-        st.markdown("### 📁 카테고리 파일")
-    with hb2:
-        run_cat = st.button("가공", key='cat_btn', type="primary", use_container_width=True)
-
-    with ht3:
-        st.markdown("### 🗂️ 인덱스 파일")
-    with hb3:
-        run_index = st.button("업로드", key='index_btn', type="primary", use_container_width=True)
-
-    # 업로더 행 — 버튼과 별도 행이므로 섹션 전체 폭을 그대로 채운다.
-    u1, u2, u3 = st.columns(3)
+    u1, u2, u3 = st.columns(3, gap="medium")
     with u1:
-        media_file = st.file_uploader("미디어 csv 업로드", type=['csv'], key='mf',
-                                       label_visibility='collapsed')
+        media_file, run_media = render_upload_card(
+            "01 · 미디어 파일", "csv 업데이트", ['csv'], 'mf', 'media_btn', is_index=False)
     with u2:
-        cat_file = st.file_uploader("카테고리 csv 업로드", type=['csv'], key='cf',
-                                     label_visibility='collapsed')
+        cat_file, run_cat = render_upload_card(
+            "02 · 카테고리 파일", "csv 업데이트", ['csv'], 'cf', 'cat_btn', is_index=False)
     with u3:
-        index_file = st.file_uploader("인덱스 xlsx 업로드", type=['xlsx', 'xls'], key='ixf',
-                                       label_visibility='collapsed')
+        index_file, run_index = render_upload_card(
+            "03 · 인덱스 파일", "xlsx 업데이트", ['xlsx', 'xls'], 'ixf', 'index_btn', is_index=True)
 
-    # 상태 메시지 행
-    s1, s2, s3 = st.columns(3)
-    with s1:
-        if media_file:
-            st.success(f"✅ {media_file.name}")
-    with s2:
-        if cat_file:
-            st.success(f"✅ {cat_file.name}")
-    with s3:
-        if run_index:
-            if not index_file:
-                st.warning("인덱스 파일을 먼저 선택해주세요.")
-            else:
-                try:
-                    group_df, creative_df, media_df = parse_index_file(index_file)
-                    missing = [c for c in INDEX_GROUP_COLUMNS if c not in group_df.columns]
-                    if missing:
-                        st.error(f"인덱스 그룹 시트에 필요한 열이 없습니다: {', '.join(missing)}")
-                    else:
-                        st.session_state['index_group_df']    = group_df
-                        st.session_state['index_creative_df'] = creative_df
-                        st.session_state['index_media_df']    = media_df
-                        st.session_state['index_filename']    = index_file.name
-                        st.session_state['index_uploaded_at'] = pd.Timestamp.now()
-                except Exception as e:
-                    st.error(f"인덱스 파일 읽기 오류: {e}")
-
-        if st.session_state['index_group_df'] is not None:
-            up_at = st.session_state['index_uploaded_at']
-            st.success(f"✅ 현재 적용 중인 인덱스: **{st.session_state['index_filename']}** "
-                       f"({up_at.strftime('%Y-%m-%d %H:%M')})")
-            g_n = len(st.session_state['index_group_df'])
-            c_n = len(st.session_state['index_creative_df']) \
-                if st.session_state['index_creative_df'] is not None else 0
-            st.caption(f"그룹 시트 {g_n}건 · 소재 시트 {c_n}건")
+    if run_index:
+        if not index_file:
+            st.warning("인덱스 파일을 먼저 선택해주세요.")
         else:
-            st.info("적용된 인덱스가 없습니다. 파일 선택 후 업로드 버튼을 눌러주세요.")
+            try:
+                group_df, creative_df, media_df = parse_index_file(index_file)
+                missing = [c for c in INDEX_GROUP_COLUMNS if c not in group_df.columns]
+                if missing:
+                    st.error(f"인덱스 그룹 시트에 필요한 열이 없습니다: {', '.join(missing)}")
+                else:
+                    st.session_state['index_group_df']    = group_df
+                    st.session_state['index_creative_df'] = creative_df
+                    st.session_state['index_media_df']    = media_df
+                    st.session_state['index_filename']    = index_file.name
+                    st.session_state['index_uploaded_at'] = pd.Timestamp.now()
+            except Exception as e:
+                st.error(f"인덱스 파일 읽기 오류: {e}")
 
-        st.caption("업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
-
-    render_guide_tabs('legacy')
-
-    st.divider()
+    if st.session_state['index_group_df'] is not None:
+        up_at = st.session_state['index_uploaded_at']
+        st.success(f"✅ 현재 적용 중인 인덱스: **{st.session_state['index_filename']}** "
+                   f"({up_at.strftime('%Y-%m-%d %H:%M')})")
+        g_n = len(st.session_state['index_group_df'])
+        c_n = len(st.session_state['index_creative_df']) \
+            if st.session_state['index_creative_df'] is not None else 0
+        st.caption(f"그룹 시트 {g_n}건 · 소재 시트 {c_n}건 · 업로드 후에는 다시 올리지 않아도 계속 적용됩니다.")
+    else:
+        st.info("적용된 인덱스가 없습니다. 파일 선택 후 [완료] 버튼을 눌러주세요.")
 
     group_lookup       = build_index_lookup(st.session_state['index_group_df'])
     creative_lookup    = build_creative_lookup(st.session_state['index_creative_df'])
     media_group_lookup = build_media_group_lookup(st.session_state['index_media_df'])
-
-    if st.session_state['media_log'] is None and st.session_state['cat_log'] is None \
-            and not run_media and not run_cat:
-        st.info("파일을 업로드한 후 각 섹션의 버튼을 눌러주세요.")
 
     # st.empty()로 자리를 잡기 전에 먼저 보여줘야 하는 안내는 여기서 처리한다 — placeholder를
     # 만든 뒤에 일반 st.warning()을 호출하면 placeholder가 이미 차지한 자리보다 아래쪽에
@@ -1490,15 +1560,13 @@ def render_legacy_tab():
 
     def _refresh_media(log, pause=0.15):
         with media_slot.container():
-            render_run_log("📊", "미디어 가공 내역", log, key_prefix="media")
+            render_run_log("미디어 파일 가공", log, key_prefix="media")
         if pause:
             time.sleep(pause)
 
     def _refresh_cat(log, pause=0.15):
         with cat_slot.container():
-            if st.session_state['media_log'] is not None:
-                st.divider()
-            render_run_log("🛒", "카테고리 가공 내역", log, key_prefix="cat")
+            render_run_log("카테고리 파일 가공", log, key_prefix="cat")
         if pause:
             time.sleep(pause)
 
@@ -1506,6 +1574,7 @@ def render_legacy_tab():
     if run_media:
         if not media_file:
             st.warning("미디어 파일을 업로드해주세요.")
+            _refresh_media(st.session_state['media_log'] or _new_run_log(MEDIA_STEP_LABELS), pause=0)
         else:
             st.session_state['media_log'] = None  # 이전 가공(오류 포함) 내역 즉시 초기화
             log = _new_run_log(MEDIA_STEP_LABELS)
@@ -1603,13 +1672,14 @@ def render_legacy_tab():
                 _refresh_media(log, pause=0)
 
             st.session_state['media_log'] = log
-    elif st.session_state['media_log'] is not None:
-        _refresh_media(st.session_state['media_log'], pause=0)
+    else:
+        _refresh_media(st.session_state['media_log'] or _new_run_log(MEDIA_STEP_LABELS), pause=0)
 
     # ────────────────────────────── 카테고리 가공 ────────────────────────────
     if run_cat:
         if not cat_file:
             st.warning("카테고리 파일을 업로드해주세요.")
+            _refresh_cat(st.session_state['cat_log'] or _new_run_log(CATEGORY_STEP_LABELS), pause=0)
         else:
             st.session_state['cat_log'] = None  # 이전 가공(오류 포함) 내역 즉시 초기화
             log = _new_run_log(CATEGORY_STEP_LABELS)
@@ -1721,23 +1791,72 @@ def render_legacy_tab():
                 _refresh_cat(log, pause=0)
 
             st.session_state['cat_log'] = log
-    elif st.session_state['cat_log'] is not None:
-        _refresh_cat(st.session_state['cat_log'], pause=0)
+    else:
+        _refresh_cat(st.session_state['cat_log'] or _new_run_log(CATEGORY_STEP_LABELS), pause=0)
+
+    render_extract_guide('legacy')
+
+
+NAV_PAGES = {
+    'new': {
+        'nav_label': '데이터가공',
+        'title':     '데이터가공',
+        'sub':       '캠페인명(F열) 단일 매칭 기준으로 사업부구분·유형구분·피드구분을 분류합니다',
+        'render':    render_new_tab,
+    },
+    'legacy': {
+        'nav_label': 'D7정제',
+        'title':     'D7정제',
+        'sub':       'Media+Campaign+Ad Group 다중 매칭 기준으로 사업부구분·D7 초과 여부를 판별합니다',
+        'render':    render_legacy_tab,
+    },
+}
+
+
+def render_sidebar_nav():
+    """사이드바 상단 브랜드("데이터 가공기") + 내비게이션(데이터가공/D7정제). 선택된 메뉴는
+    st.session_state['nav_page']에 저장하고 브랜드 mint 배경으로 강조한다."""
+    st.session_state.setdefault('nav_page', 'new')
+
+    with st.sidebar:
+        st.markdown(
+            '<div class="nps-brand">'
+            '<div class="nps-brand-mark">NPS</div>'
+            '<div><div class="nps-brand-name">데이터 가공기</div>'
+            '<div class="nps-brand-sub">wisebirds</div></div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown('<div class="nps-nav-group-label">작업</div>', unsafe_allow_html=True)
+        for key, meta in NAV_PAGES.items():
+            active = st.session_state['nav_page'] == key
+            if st.button(meta['nav_label'], key=f'nav_{key}',
+                         type="primary" if active else "secondary",
+                         use_container_width=True):
+                st.session_state['nav_page'] = key
+                st.rerun()
+
+    return st.session_state['nav_page']
 
 
 def main():
     st.set_page_config(page_title="NPS Report 가공기", layout="wide", page_icon="📊")
-    st.title("📊 NPS Report 데이터 가공기")
-    st.caption("미디어·카테고리 CSV 로우 데이터를 업로드하면 RD 시트 형식으로 자동 가공합니다.")
 
     inject_theme_css()
     _init_session_state()
 
-    tab_new, tab_legacy = st.tabs(["🆕 데이터가공", "🗄️ D7정제"])
-    with tab_new:
-        render_new_tab()
-    with tab_legacy:
-        render_legacy_tab()
+    page = render_sidebar_nav()
+    meta = NAV_PAGES[page]
+
+    st.markdown(
+        f'<div style="margin-bottom:20px;">'
+        f'<h1 style="font-size:20px;font-weight:700;margin:0 0 4px;">{meta["title"]}</h1>'
+        f'<p style="margin:0;font-size:13px;color:var(--text-muted);">{meta["sub"]}</p>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    meta['render']()
 
 
 if __name__ == "__main__":

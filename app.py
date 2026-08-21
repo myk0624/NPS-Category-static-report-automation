@@ -1014,20 +1014,20 @@ def inject_theme_css():
             border-color: var(--border) !important;
             color: var(--text-muted) !important;
         }
+        /* disabled 버튼도 배경과 뚜렷이 구분되는 테두리(--border)를 유지해야 "버튼 박스"로
+           보인다 — border-color를 배경과 같은 --bg로 두면 테두리가 배경에 묻혀 텍스트 링크처럼
+           보이는 문제가 있었다. */
         button:disabled, button:disabled:hover {
             background-color: var(--bg) !important;
-            border-color: var(--bg) !important;
+            border-color: var(--border) !important;
             color: var(--text-muted) !important;
+            opacity: 1 !important;
         }
 
         [data-testid="stProgressBar"] > div > div { background-color: var(--primary) !important; }
 
         /* 업로드 카드 */
         .nps-upload-label { font-size:13.5px; font-weight:700; color:var(--text); margin-bottom:8px; }
-        .nps-upload-placeholder { font-size:12.5px; color:var(--text-muted); margin:8px 0 10px; }
-        .nps-upload-filename {
-            font-size:12px; color:var(--text); font-family:var(--mono); margin:8px 0 10px; word-break:break-all;
-        }
 
         /* 진행 현황 패널 — 헤더(제목/진행률/다운로드) */
         .nps-pipeline-title { font-size:14px; font-weight:700; color:var(--text); margin:0; }
@@ -1085,35 +1085,49 @@ STEP_STATUS_SUB = {
 
 
 def render_upload_card(label, placeholder_text, file_types, uploader_key, button_key, is_index=False):
-    """업로드 카드 하나(라벨 + 파일 업로더 + 조건부 버튼)를 그린다.
+    """업로드 카드 하나를 그린다 — 라벨 + st.file_uploader(네이티브 드롭존을 카드 디자인에
+    맞게 스킨) 하나만으로 구성한다.
 
-    - 파일 미업로드 상태: 버튼 = "Upload"(테두리만 있는 무채색 스타일), 비활성화
-    - 파일 업로드 후: 버튼 = "가공"(미디어/카테고리) 또는 "완료"(인덱스), 브랜드 레드 채움
+    Streamlit 위젯은 임의의 커스텀 버튼이 대신 클릭을 위임할 수 없으므로("우리 버튼이 숨겨진
+    file_uploader를 트리거"하는 방식은 불가능), 실제 업로드 트리거는 네이티브 드롭존의 자체
+    버튼 하나로 통일한다 — 그 위에 우리 커스텀 "Upload" 버튼을 별도로 얹으면 같은 카드 안에
+    업로드 버튼이 2개로 보이는 중복이 생겼던 원인이었다. 네이티브 드롭존의 테두리/배경/안내
+    문구(예: "200MB per file • CSV")는 CSS로 걷어내고 우리 placeholder_text로 교체해
+    카드 전체가 하나의 통합된 컴포넌트로 보이게 한다.
+
+    - 파일 미업로드 상태: 네이티브 드롭존의 "Upload" 버튼(테두리만 있는 무채색 secondary)이
+      유일한 컨트롤
+    - 파일 업로드 후: 네이티브 드롭존이 파일 칩(파일명 + 제거)으로 바뀌고, 그 아래 우리
+      "가공"(미디어/카테고리) 또는 "완료"(인덱스) 브랜드 레드 버튼이 다음 동작으로 추가된다
+      (업로드와는 다른 별개 동작이므로 중복이 아니다)
     Returns (uploaded_file, button_clicked).
     """
     card_key = f"upload_card_{uploader_key}"
-    st.markdown(
-        f'<style>.st-key-{card_key} {{ border-style: dashed !important; '
-        f'border-color: var(--border) !important; border-radius: var(--radius) !important; }}</style>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"""
+        <style>
+        .st-key-{card_key} {{
+            border-style: dashed !important; border-color: var(--border) !important;
+            border-radius: var(--radius) !important;
+        }}
+        .st-key-{card_key} [data-testid="stFileUploaderDropzone"] {{
+            background: transparent !important; border: none !important; padding: 0 !important;
+        }}
+        .st-key-{card_key} [data-testid="stFileUploaderDropzoneInstructions"] {{ display: none !important; }}
+        .st-key-{card_key} [data-testid="stFileUploaderDropzone"] {{ position: relative; }}
+        .st-key-{card_key} [data-testid="stFileUploaderDropzone"]::after {{
+            content: "{escape(placeholder_text)}"; display: block; margin-top: 6px;
+            font-size: 12.5px; color: var(--text-muted); font-family: var(--sans);
+        }}
+        </style>
+    """, unsafe_allow_html=True)
     with st.container(key=card_key, border=True):
         st.markdown(f'<div class="nps-upload-label">{escape(label)}</div>', unsafe_allow_html=True)
         uploaded = st.file_uploader(f"{label} 업로드", type=file_types, key=uploader_key,
                                      label_visibility='collapsed')
+        clicked = False
         if uploaded is not None:
-            st.markdown(f'<div class="nps-upload-filename">{escape(uploaded.name)}</div>',
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="nps-upload-placeholder">{escape(placeholder_text)}</div>',
-                        unsafe_allow_html=True)
-
-        if uploaded is not None:
-            btn_label, btn_type = ("완료" if is_index else "가공"), "primary"
-        else:
-            btn_label, btn_type = "Upload", "secondary"
-        clicked = st.button(btn_label, key=button_key, type=btn_type,
-                             use_container_width=True, disabled=uploaded is None)
+            btn_label = "완료" if is_index else "가공"
+            clicked = st.button(btn_label, key=button_key, type="primary", use_container_width=True)
     return uploaded, clicked
 
 

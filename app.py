@@ -192,6 +192,41 @@ GENERIC_CATEGORY_COLS = ('카테고리 구매 unique', '카테고리 구매 quan
 # '사업부-연합' + USP Category='ALL'인 행이 동일 원본 값을 복사받는 4개 카테고리 그룹.
 ALL_UNION_USP_GROUPS = ['리빙', '키즈', '펫', '자동차/공구']
 
+# 프로모션 단위 합산 예외: (사업부구분, 카테고리 파일 [프로모션] 열) 매칭 시 지정한 여러
+# 카테고리 그룹 값을 합산해 '카테고리 구매' 3열에 넣는다. 프로모션 추가/제거는
+# 'promotions' 목록만 수정하면 된다.
+PROMO_COL = '프로모션'
+PROMOTION_SUM_EXCEPTIONS = {
+    '사업부-여가생활e쿠폰': {
+        'promotions': {'넾다세일'},
+        'groups': ['여가/도서(e쿠폰)', '패션'],
+    },
+}
+
+
+def _to_num(v):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return np.nan
+    if isinstance(v, str):
+        v = v.replace(',', '').strip()
+        if v in ('', '-'):
+            return np.nan
+    return pd.to_numeric(v, errors='coerce')
+
+
+def sum_category_groups(row, df_columns, groups):
+    """여러 카테고리 그룹의 unique/quantity/price를 각각 합산. 전부 비어 있으면 NaN."""
+    result = []
+    for idx in range(3):
+        vals = []
+        for g in groups:
+            col = category_group_cols(g)[idx]
+            if col in df_columns:
+                vals.append(_to_num(row[col]))
+        vals = [v for v in vals if pd.notna(v)]
+        result.append(sum(vals) if vals else np.nan)
+    return tuple(result)
+
 
 def category_group_cols(group_name):
     return (f'{group_name} unique', f'{group_name} quantity', f'{group_name} price')
@@ -485,6 +520,13 @@ def process_category_step3(df, biz_list, type_list=None):
         biz_str = str(biz).strip() if biz not in ('', None) and biz != INDEX_MISSING_MARK else ''
 
         group_name = None
+        promo_str = str(row[PROMO_COL]).strip() if PROMO_COL in df.columns and pd.notna(row[PROMO_COL]) else ''
+        sum_exc = PROMOTION_SUM_EXCEPTIONS.get(biz_str)
+        if sum_exc and promo_str in sum_exc['promotions']:
+            # 프로모션 합산 예외 (데이터가공·D7정제 공통): 지정 그룹 합산값으로 치환
+            su, sq, sp = sum_category_groups(row, df.columns, sum_exc['groups'])
+            out_u.iloc[pos], out_q.iloc[pos], out_p.iloc[pos] = su, sq, sp
+            continue
         if type_list is not None and biz_str == '사업부-그로서리-별도' \
                 and str(type_list[pos]).strip() == '카탈로그':
             group_name = 'e-kam'  # [데이터가공] 탭 전용 예외: 그로서리-별도 + 카탈로그 → e-kam
@@ -886,7 +928,8 @@ GUIDE_CONTENT = {
          "- `기본 매핑` : 사업부구분 → 동일 카테고리열 (가구→가구열, 그로서리→식품열 등)\n"
          "- `사업부-연합` : USP Category 값으로 2차 매핑, 미해당 시 `수기확인`\n"
          "- `사업부-연합 + ALL` : USP Category가 `ALL`이면 리빙·키즈·펫·자동차/공구 4개 카테고리 그룹에 동일 값 복사\n"
-         "- `그로서리-별도+카탈로그` : 식품열 대신 `e-kam`열로 치환"),
+         "- `그로서리-별도+카탈로그` : 식품열 대신 `e-kam`열로 치환\n"
+         "- `여가생활e쿠폰 + 프로모션 넾다세일` : `여가/도서(e쿠폰)` + `패션` 합산값으로 치환"),
         ("공통치환",
          "- `Campaign Theme` : `-` → `BS`\n"
          "- `Campaign Theme(ADEF)` : `-` → `사업부`\n"
@@ -917,7 +960,8 @@ GUIDE_CONTENT = {
          "- `기본 매핑` : 사업부구분 → 동일 카테고리열\n"
          "- `사업부-연합` : USP Category 값으로 2차 매핑, 미해당 시 `수기확인`\n"
          "- `사업부-연합 + ALL` : USP Category가 `ALL`이면 리빙·키즈·펫·자동차/공구 4개 카테고리 그룹에 동일 값 복사\n"
-         "- `그로서리-별도` : e-kam 예외 없음, 식품열 그대로 유지 (데이터가공 탭과의 차이점)"),
+         "- `그로서리-별도` : e-kam 예외 없음, 식품열 그대로 유지 (데이터가공 탭과의 차이점)\n"
+         "- `여가생활e쿠폰 + 프로모션 넾다세일` : `여가/도서(e쿠폰)` + `패션` 합산값으로 치환"),
         ("공통치환",
          "- `Campaign Theme` : `-` → `BS`\n"
          "- `Campaign Theme(ADEF)` : `-` → `사업부`\n"

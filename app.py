@@ -1392,6 +1392,11 @@ def render_upload_card(label, placeholder_text, file_types, uploader_key, button
         {k} [data-testid="stFileChipName"] {{ font-size: 13px !important; font-weight: 500; color: var(--text); }}
         {k} button[data-testid="stBaseButton-borderlessIcon"] {{ display: none !important; }}
         {k} .stButton, {k} .stButton > button {{ width: 100% !important; }}
+        /* 업로드 전(비활성) 실행 버튼 — 연한 로즈(브랜드 레드 계열), 업로드 후엔 브랜드 레드로 활성화 */
+        {k} .stButton button:disabled, {k} .stButton button:disabled:hover {{
+            background-color: #FBF1EF !important; border-color: #FBF1EF !important;
+            color: #C9A39E !important; opacity: 1 !important; cursor: not-allowed;
+        }}
         </style>
     """, unsafe_allow_html=True)
     with st.container(key=card_key, border=True):

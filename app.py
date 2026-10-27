@@ -63,11 +63,76 @@ CATEGORY_EXTRA_COLUMNS = [
     '펫 unique', '펫 quantity', '펫 price',
     'e-kam unique', 'e-kam quantity', 'e-kam price',
     '여가/도서(e쿠폰) unique', '여가/도서(e쿠폰) quantity', '여가/도서(e쿠폰) price',
-    '노크잇 unique', '노크잇 quantity', '노크잇 price',
 ]
 
 CATEGORY_COLUMNS  = MEDIA_COLUMNS + CATEGORY_EXTRA_COLUMNS
 CATEGORY_MARKER   = '카테고리 구매 unique'  # 카테고리 파일에만 존재하는 컬럼
+
+# ── AppsFlyer D0 양식 ──────────────────────────────────────────────────────────
+# D7 양식과 열 이름은 모두 같고 'AF Order Count(Adef)'(BK열) 바로 뒤에 'AF Order Unique(Adef)'
+# (BL열) 1개만 추가된다. 그 뒤 열은 모두 한 칸씩 밀린다(소구점 BQ→BR 등).
+D0_MARKER = 'AF Order Unique(Adef)'
+_d0_pos = MEDIA_COLUMNS.index('AF Order Count(Adef)') + 1
+MEDIA_COLUMNS_D0    = MEDIA_COLUMNS[:_d0_pos] + [D0_MARKER] + MEDIA_COLUMNS[_d0_pos:]
+CATEGORY_COLUMNS_D0 = MEDIA_COLUMNS_D0 + CATEGORY_EXTRA_COLUMNS
+
+
+def _col_letter(n: int) -> str:
+    """1-based 열 번호 → 엑셀 열 문자 (1=A, 70=BR)."""
+    out = ''
+    while n:
+        n, r = divmod(n - 1, 26)
+        out = chr(65 + r) + out
+    return out
+
+
+def _format_spec(label, tab, media_cols):
+    n = len(media_cols)
+    return {
+        'label':      label,
+        'tab':        tab,
+        'media_cols': n,
+        'cat_cols':   n + len(CATEGORY_EXTRA_COLUMNS),
+        # 출력 파일 기준: 소구점 다음에 사업부구분/유형 구분/피드 구분 3열 삽입
+        'biz':        _col_letter(n + 1),
+        'type':       _col_letter(n + 2),
+        'feed':       _col_letter(n + 3),
+        'cat_start':  _col_letter(n + 4),
+        'sogu':       _col_letter(n),
+    }
+
+
+FORMAT_SPECS = {
+    'd7': _format_spec('D7', '데이터가공-D7', MEDIA_COLUMNS),
+    'd0': _format_spec('D0', '데이터가공-D0', MEDIA_COLUMNS_D0),
+}
+
+
+def detect_af_format(df):
+    """'AF Order Unique(Adef)' 열 존재 여부로 D0/D7 양식 판별 (열 이름 앞뒤 공백·BOM 무시)."""
+    names = {str(c).replace('\ufeff', '').strip() for c in df.columns}
+    return 'd0' if D0_MARKER in names else 'd7'
+
+
+def check_af_format(raw, fmt, kind):
+    """업로드 파일이 현재 탭의 양식(D7/D0)과 맞는지 확인한다.
+    - 다른 양식이면 ValueError → 1단계 오류로 표시하고 가공 중단 (올바른 탭 안내)
+    - 같은 양식인데 열 수만 다르면 경고 문구 반환 (가공은 계속)
+    - 정상이면 'D7 양식 확인 (69열)' 형태의 확인 문구 반환"""
+    spec   = FORMAT_SPECS[fmt]
+    actual = detect_af_format(raw)
+    if actual != fmt:
+        other = FORMAT_SPECS[actual]
+        raise ValueError(
+            f"{other['label']} 양식 파일입니다. [{other['tab']}] 탭에 올려주세요. "
+            f"('{D0_MARKER}' 열 {'있음' if actual == 'd0' else '없음'})"
+        )
+    expected = spec['media_cols'] if kind == 'media' else spec['cat_cols']
+    n = raw.shape[1]
+    if n != expected:
+        return (f"⚠️ {spec['label']} 양식 기준({expected}열)과 열 수가 다릅니다({n}열). "
+                "열 구조를 확인해주세요.")
+    return f"{spec['label']} 양식 확인 ({n}열)"
 
 
 def detect_file_kind(df):
@@ -104,6 +169,11 @@ def _read_csv_with_encoding(uploaded_file, encoding, errors='strict'):
     return df
 
 
+def _log_debug(msg):
+    """인코딩 시도 내역 — 화면에는 표시하지 않고 서버 로그(Streamlit Cloud > Manage app)에만 남긴다."""
+    print(msg, flush=True)
+
+
 def read_csv_robust(uploaded_file):
     """인코딩이 다른 CSV(UTF-8 / CP949 등)를 순차 시도하여 읽는다.
     헤더를 직접 읽어 컬럼명으로 명시 지정해서 읽기 때문에, 데이터 행의 필드 수가
@@ -119,10 +189,10 @@ def read_csv_robust(uploaded_file):
     for enc in tried:
         try:
             df = _read_csv_with_encoding(uploaded_file, enc)
-            st.write(f"[DEBUG] '{fname}' 인코딩 '{enc}'로 읽기 성공")
+            _log_debug(f"[DEBUG] '{fname}' 인코딩 '{enc}'로 읽기 성공")
             return df
         except (UnicodeDecodeError, UnicodeError) as e:
-            st.write(f"[DEBUG] '{fname}' 인코딩 '{enc}' 실패: {e}")
+            _log_debug(f"[DEBUG] '{fname}' 인코딩 '{enc}' 실패: {e}")
             continue
 
     # 자동 감지: charset-normalizer로 실제 인코딩 추정
@@ -134,18 +204,18 @@ def read_csv_robust(uploaded_file):
         best = from_bytes(raw).best()
         detected = best.encoding if best is not None else None
     except ImportError:
-        st.write("[DEBUG] charset-normalizer가 설치되어 있지 않아 자동 감지를 건너뜁니다.")
+        _log_debug("[DEBUG] charset-normalizer가 설치되어 있지 않아 자동 감지를 건너뜁니다.")
     except Exception as e:
-        st.write(f"[DEBUG] charset-normalizer 감지 중 오류: {e}")
+        _log_debug(f"[DEBUG] charset-normalizer 감지 중 오류: {e}")
 
     if detected and detected not in tried:
-        st.write(f"[DEBUG] '{fname}' charset-normalizer 감지 인코딩: {detected}")
+        _log_debug(f"[DEBUG] '{fname}' charset-normalizer 감지 인코딩: {detected}")
         try:
             df = _read_csv_with_encoding(uploaded_file, detected)
-            st.write(f"[DEBUG] '{fname}' 감지된 인코딩 '{detected}'로 읽기 성공")
+            _log_debug(f"[DEBUG] '{fname}' 감지된 인코딩 '{detected}'로 읽기 성공")
             return df
         except (UnicodeDecodeError, UnicodeError, LookupError) as e:
-            st.write(f"[DEBUG] '{fname}' 감지된 인코딩 '{detected}'로도 실패: {e}")
+            _log_debug(f"[DEBUG] '{fname}' 감지된 인코딩 '{detected}'로도 실패: {e}")
 
     # 최후 수단: 깨진 바이트를 대체 문자로 치환하며 읽기
     st.warning(f"'{fname}'의 인코딩을 확인할 수 없어 일부 문자가 깨진 상태(대체 문자로 치환)로 읽었습니다. 결과를 확인해주세요.")
@@ -859,6 +929,9 @@ def _init_session_state():
         'index2_uploaded_at':  None,
         'media_log2':          None,
         'cat_log2':            None,
+        # 데이터가공-D0 탭 (인덱스는 데이터가공-D7 탭과 공유: index2_*)
+        'media_log_d0':        None,
+        'cat_log_d0':          None,
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
@@ -869,38 +942,38 @@ def _init_session_state():
 # ──────────────────────────────────────────────────────────────────────────────
 
 MEDIA_STEP_LABELS = [
-    'CSV 파일 읽기 및 컬럼 구조 검증',
-    '인덱스 매칭 — 사업부구분 / D7 판정',
-    'Campaign Theme 값 치환',
-    '대구분 값 치환 (미디어구분 인덱스)',
-    'USP(ADEF) 값 치환',
+    'CSV 읽기 · 열 구조 검증',
+    '인덱스 매칭 (사업부·D7 판정)',
+    'Campaign Theme 치환',
+    '대구분 치환',
+    'USP(ADEF) 치환',
     '엑셀 파일 생성',
 ]
 CATEGORY_STEP_LABELS = [
-    'CSV 파일 읽기 및 컬럼 구조 검증',
-    '인덱스 매칭 — 사업부구분 / D7 판정',
-    '카테고리 값 매핑 (사업부구분 기준)',
-    'Campaign Theme 값 치환',
-    '대구분 값 치환 (미디어구분 인덱스)',
-    'USP(ADEF) 값 치환',
+    'CSV 읽기 · 열 구조 검증',
+    '인덱스 매칭 (사업부·D7 판정)',
+    '카테고리 값 매핑',
+    'Campaign Theme 치환',
+    '대구분 치환',
+    'USP(ADEF) 치환',
     '엑셀 파일 생성',
 ]
 
 MEDIA_STEP_LABELS_V2 = [
-    'CSV 파일 읽기 및 컬럼 구조 검증',
-    '인덱스 매칭 — 사업부구분 / 유형 구분 / 피드 구분',
-    'Campaign Theme 값 치환',
-    '대구분 값 치환 (미디어구분 인덱스)',
-    'USP(ADEF) 값 치환',
+    'CSV 읽기 · 열 구조 검증',
+    '인덱스 매칭 (사업부·유형·피드)',
+    'Campaign Theme 치환',
+    '대구분 치환',
+    'USP(ADEF) 치환',
     '엑셀 파일 생성',
 ]
 CATEGORY_STEP_LABELS_V2 = [
-    'CSV 파일 읽기 및 컬럼 구조 검증',
-    '인덱스 매칭 — 사업부구분 / 유형 구분 / 피드 구분',
-    '카테고리 값 매핑 (사업부구분 기준)',
-    'Campaign Theme 값 치환',
-    '대구분 값 치환 (미디어구분 인덱스)',
-    'USP(ADEF) 값 치환',
+    'CSV 읽기 · 열 구조 검증',
+    '인덱스 매칭 (사업부·유형·피드)',
+    '카테고리 값 매핑',
+    'Campaign Theme 치환',
+    '대구분 치환',
+    'USP(ADEF) 치환',
     '엑셀 파일 생성',
 ]
 
@@ -971,14 +1044,74 @@ GUIDE_CONTENT = {
 }
 
 
+def _column_standard_md(fmt):
+    """[열 기준] 서브탭 — 현재 탭이 인식하는 업로드 양식과 출력 열 위치(D7 vs D0 비교)."""
+    d7, d0 = FORMAT_SPECS['d7'], FORMAT_SPECS['d0']
+    cur = FORMAT_SPECS[fmt]
+    return (
+        f"이 탭은 **{cur['label']} 양식** 파일만 가공합니다. 다른 양식 파일은 1단계에서 멈추고 맞는 탭을 안내합니다.\n\n"
+        "| 항목 | D7 | D0 |\n"
+        "|---|---|---|\n"
+        f"| 미디어 열 수 | {d7['media_cols']} | {d0['media_cols']} |\n"
+        f"| 카테고리 열 수 | {d7['cat_cols']} | {d0['cat_cols']} |\n"
+        f"| AF Order Unique(Adef) | 없음 | BL |\n"
+        f"| 소구점 | {d7['sogu']} | {d0['sogu']} |\n"
+        f"| 사업부구분 / 유형 구분 / 피드 구분 | {d7['biz']} / {d7['type']} / {d7['feed']} | "
+        f"{d0['biz']} / {d0['type']} / {d0['feed']} |\n"
+        f"| 카테고리 구매 unique | {d7['cat_start']} | {d0['cat_start']} |\n\n"
+        "출력 파일은 업로드한 원본 열 구조를 그대로 유지합니다 (D0는 AF Order Unique(Adef) 열 포함)."
+    )
+
+
+def _guide_for_d0(items):
+    """[데이터가공-D7] 안내 내용에서 출력 열 위치만 D0 기준으로 바꾼다. 굵게 표시된 열 위치
+    (**BR열** 등)만 치환해 공통치환의 `BS` 같은 값 텍스트는 건드리지 않는다. D7과 위치가
+    달라진 열은 주황 배경으로 강조한다."""
+    d7, d0 = FORMAT_SPECS['d7'], FORMAT_SPECS['d0']
+    pairs = [(d7[k], d0[k]) for k in ('biz', 'type', 'feed', 'cat_start')]
+    out = []
+    for name, content in items:
+        for i, (old, _) in enumerate(pairs):
+            content = content.replace(f"**{old}열**", f"@@{i}@@")
+        for i, (_, new) in enumerate(pairs):
+            content = content.replace(f"@@{i}@@", f":orange-background[**{new}열**]")
+        out.append((name, content))
+    return out
+
+
+GUIDE_CONTENT['new_d0'] = _guide_for_d0(GUIDE_CONTENT['new']) + [('열 기준', _column_standard_md('d0'))]
+GUIDE_CONTENT['new'] = GUIDE_CONTENT['new'] + [('열 기준', _column_standard_md('d7'))]
+
+GUIDE_SUBTITLES = {
+    'new':    '가공 과정에서 나오는 추출값이 어떤 의미인지 설명합니다',
+    'new_d0': '가공 과정에서 나오는 추출값이 어떤 의미인지 설명합니다 · 주황 표시는 D7과 위치가 다른 열입니다',
+    'legacy': '가공 과정에서 나오는 추출값이 어떤 의미인지 설명합니다',
+}
+
+
+def render_format_strip(fmt):
+    """데이터가공-D7/D0 탭 상단 — 이 탭이 인식하는 AppsFlyer 파일 양식 요약."""
+    spec = FORMAT_SPECS[fmt]
+    order = ('BK AF Order Count(Adef) → BL 집약형(Adef)' if fmt == 'd7'
+             else 'BK AF Order Count(Adef) → BL AF Order Unique(Adef) → BM 집약형(Adef)')
+    st.html(
+        '<div class="nps-spec">'
+        f'<span class="nps-spec-tag">{spec["label"]} 양식</span>'
+        f'<span class="nps-spec-kv"><span class="nps-spec-k">미디어</span><span class="nps-spec-v">{spec["media_cols"]}열</span></span>'
+        f'<span class="nps-spec-kv"><span class="nps-spec-k">카테고리</span><span class="nps-spec-v">{spec["cat_cols"]}열</span></span>'
+        f'<span class="nps-spec-kv"><span class="nps-spec-k">열 순서</span><span class="nps-spec-v">{order}</span></span>'
+        '</div>'
+    )
+
+
 def render_extract_guide(kind):
-    """추출값 안내 영역 — "패널"(제목 + 설명) 안에 서브탭(st.tabs) + 탭별 내용을 감싸는
-    테두리 박스(st.container(border=True))로 표시한다. 각 탭 내용의 백틱(`) 코드 서식은
-    inject_theme_css()에서 레드 톤 칩 스타일로 전역 오버라이드된다.
-    kind는 'new'([데이터가공] 탭) 또는 'legacy'([D7정제] 탭)."""
+    """추출값 안내 영역 — 제목/설명 + 서브탭(st.tabs) + 탭별 내용 박스.
+    kind: 'new'(데이터가공-D7) / 'new_d0'(데이터가공-D0) / 'legacy'(D7정제)."""
     with st.container(border=True):
-        st.markdown("#### 추출값 안내")
-        st.caption("가공 과정에서 나오는 추출값이 어떤 의미인지 설명합니다")
+        st.html(
+            '<div class="nps-guide-title">추출값 안내</div>'
+            f'<div class="nps-guide-sub">{GUIDE_SUBTITLES.get(kind, "")}</div>'
+        )
         items = GUIDE_CONTENT[kind]
         tabs = st.tabs([name for name, _ in items])
         for tab, (_, content) in zip(tabs, items):
@@ -1091,25 +1224,55 @@ def inject_theme_css():
         .nps-progress-mini { width:120px !important; max-width:120px !important; height:5px !important; border-radius:3px; background:var(--bg); overflow:hidden; margin-top:6px; display:block; flex:none !important; }
         .nps-progress-mini > div { height:100%; background:var(--primary); transition:width .2s; }
 
-        /* 가로 스텝 트래커 */
-        .nps-track { display:flex; align-items:flex-start; justify-content:space-between; position:relative; gap:4px; margin-top:14px; flex-wrap:wrap; }
+        /* 가로 스텝 트래커 — 단계 수만큼 균등 그리드. 연결선은 첫 점 중앙~마지막 점 중앙까지만
+           그리고, 점에 배경색을 줘서 선이 점 뒤로 숨게 한다(노드 자체엔 배경 없음 → 패널 테두리를
+           덮어 잘려 보이던 문제 해결). 좁은 화면에선 가로 스크롤. */
+        .nps-track-wrap { overflow-x:auto; margin-top:16px; padding:2px 0 4px; }
+        .nps-track {
+            display:grid; grid-template-columns:repeat(var(--n), minmax(92px, 1fr));
+            position:relative; column-gap:8px; min-width:calc(var(--n) * 100px);
+        }
         .nps-track::before {
-            content:""; position:absolute; top:14px; left:4%; right:4%; height:1px;
+            content:""; position:absolute; top:14px; height:1px;
+            left:calc(100% / var(--n) / 2); right:calc(100% / var(--n) / 2);
             background-image:linear-gradient(to right, var(--border) 50%, transparent 50%);
             background-size:8px 1px; z-index:0;
         }
-        .nps-node { display:flex; flex-direction:column; align-items:center; gap:6px; flex:1 1 0; min-width:96px; position:relative; z-index:1; background:var(--surface); padding:0 2px; }
+        .nps-node { display:flex; flex-direction:column; align-items:center; gap:6px; position:relative; z-index:1; min-width:0; }
         .nps-node-dot {
             width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center;
             font-family:var(--mono); font-size:11px; font-weight:500; border:1.5px solid var(--border);
-            background:var(--surface); color:var(--text-muted);
+            background:var(--surface); color:var(--text-muted); flex:none;
         }
         .nps-node.done .nps-node-dot { background:var(--primary); border-color:var(--primary); color:#fff; }
         .nps-node.active .nps-node-dot { border-color:var(--primary); color:var(--primary-dark); background:var(--mint); }
         .nps-node.error .nps-node-dot { border-color:#B91C1C; color:#fff; background:#B91C1C; }
-        .nps-node-label { font-size:11.5px; font-weight:600; text-align:center; color:var(--text); line-height:1.35; }
+        .nps-node-label {
+            font-size:11.5px; font-weight:600; text-align:center; color:var(--text); line-height:1.4;
+            min-height:2.8em; display:flex; align-items:flex-start; justify-content:center;
+            word-break:keep-all; overflow-wrap:anywhere; padding:0 2px;
+        }
         .nps-node-sub { font-size:10.5px; color:var(--text-muted); text-align:center; font-family:var(--mono); }
+        .nps-node.done .nps-node-sub { color:var(--primary-dark); }
         .nps-node.error .nps-node-sub { color:#B91C1C; }
+
+        /* 양식 안내 띠 (데이터가공-D7 / D0 탭 상단) */
+        .nps-spec {
+            display:flex; flex-wrap:wrap; gap:8px 20px; align-items:center;
+            background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+            padding:12px 16px; margin:0 0 4px; font-size:12.5px; color:var(--text);
+        }
+        .nps-spec-tag {
+            font-family:var(--mono); font-size:11.5px; font-weight:500; color:var(--primary-dark);
+            background:var(--mint); padding:2px 8px; border-radius:5px;
+        }
+        .nps-spec-kv { display:inline-flex; gap:6px; align-items:baseline; }
+        .nps-spec-k { color:var(--text-muted); white-space:nowrap; }
+        .nps-spec-v { font-family:var(--mono); font-weight:500; }
+
+        /* 추출값 안내 패널 제목 */
+        .nps-guide-title { font-size:14px; font-weight:700; color:var(--text); margin:0 0 2px; }
+        .nps-guide-sub { font-size:12.5px; color:var(--text-muted); margin:0 0 4px; }
 
         /* 추출값 안내 — 백틱 코드 서식을 레드 톤 칩으로 (라인 전체가 아닌 용어에만 배경 적용) */
         [data-testid="stMarkdownContainer"] code {
@@ -1229,18 +1392,22 @@ def render_upload_card(label, placeholder_text, file_types, uploader_key, button
 def render_step_track_html(steps):
     """단계 진행 상태를 가로 스텝 트래커(노드 연결) HTML로 그린다. 라벨/상태 문자열은 모두
     코드 내부에서 정의된 고정 텍스트이므로 escape 없이 그대로 삽입해도 안전하다(사용자 입력이
-    섞이는 detail 텍스트는 여기서 렌더링하지 않고 호출부에서 st.caption으로 별도 표시한다)."""
+    섞이는 detail 텍스트는 여기서 렌더링하지 않고 호출부에서 st.caption으로 별도 표시한다).
+    줄 앞 공백이 있으면 마크다운이 코드블록으로 오인할 수 있어 공백 없이 이어 붙인다."""
     state_cls = {'pending': '', 'running': 'active', 'done': 'done', 'error': 'error'}
     nodes = []
     for i, s in enumerate(steps):
         cls = state_cls.get(s['status'], '')
         sub = STEP_STATUS_SUB.get(s['status'], '처리전')
-        nodes.append(f'''<div class="nps-node {cls}">
-            <div class="nps-node-dot">{i + 1}</div>
-            <div class="nps-node-label">{s['label']}</div>
-            <div class="nps-node-sub">{sub}</div>
-        </div>''')
-    return f'<div class="nps-track">{"".join(nodes)}</div>'
+        nodes.append(
+            f'<div class="nps-node {cls}">'
+            f'<div class="nps-node-dot">{i + 1}</div>'
+            f'<div class="nps-node-label">{s["label"].replace(" (", "<br>(")}</div>'
+            f'<div class="nps-node-sub">{sub}</div>'
+            f'</div>'
+        )
+    return (f'<div class="nps-track-wrap"><div class="nps-track" style="--n:{len(steps)};">'
+            f'{"".join(nodes)}</div></div>')
 
 
 def render_run_log(title, log, key_prefix):
@@ -1301,32 +1468,46 @@ def render_run_log(title, log, key_prefix):
                     key=f"{key_prefix}_dl_btn_{seq}",
                 )
 
-        st.markdown(render_step_track_html(steps), unsafe_allow_html=True)
+        st.html(render_step_track_html(steps))
 
         # 상세 메시지(detail)가 있는 단계만 캡션으로 표시 — detail 텍스트는 업로드 파일명 등
         # 사용자 입력을 포함할 수 있어 raw HTML이 아닌 st.caption(자체 escape)으로 렌더링한다.
-        for s in steps:
-            if s['detail']:
-                st.caption(f":red[{s['detail']}]" if s['status'] == 'error' else s['detail'])
+        # 정상 단계 메시지는 한 줄로 모아 간결하게, 오류 메시지는 따로 빨간색으로 표시한다.
+        infos  = [s['detail'] for s in steps if s['detail'] and s['status'] != 'error']
+        errors = [s['detail'] for s in steps if s['detail'] and s['status'] == 'error']
+        if infos:
+            st.caption('  ·  '.join(infos))
+        for err in errors:
+            st.caption(f":red[{err}]")
 
 
-def render_new_tab():
+def render_new_tab(fmt='d7'):
     """[데이터가공] 탭 — 캠페인명 단독 매칭 기준 신규 가공 로직.
 
     - D7 초과 여부 판정 자체를 하지 않음 (그룹_D7초과여부/소재_D7초과여부 열 없음)
     - 인덱스 파일: [캠페인] 시트(Campaign/사업부구분/유형 구분), [피드구분] 시트
       (Creative Full Name/피드 구분) — D7정제 탭의 인덱스와는 완전히 별도로 관리한다.
+
+    fmt='d7' → [데이터가공-D7] 탭, fmt='d0' → [데이터가공-D0] 탭. 두 탭은 가공 규칙과 인덱스를
+    공유하고, 업로드 파일 양식(열 구조)·가공 결과·다운로드만 각각 독립적으로 관리한다.
     """
+    spec = FORMAT_SPECS[fmt]
+    sfx  = '' if fmt == 'd7' else '_d0'      # 위젯/세션 키 접미어 (D7은 기존 키 그대로 유지)
+    MK   = 'media_log2' if fmt == 'd7' else 'media_log_d0'
+    CK   = 'cat_log2'   if fmt == 'd7' else 'cat_log_d0'
+
+    render_format_strip(fmt)
+
     u1, u2, u3 = st.columns(3, gap="medium")
     with u1:
         media_file2, run_media2 = render_upload_card(
-            "01 · 미디어 파일", "csv 업데이트", ['csv'], 'mf2', 'media_btn2', is_index=False)
+            "01 · 미디어 파일", "csv 업데이트", ['csv'], f'mf2{sfx}', f'media_btn2{sfx}', is_index=False)
     with u2:
         cat_file2, run_cat2 = render_upload_card(
-            "02 · 카테고리 파일", "csv 업데이트", ['csv'], 'cf2', 'cat_btn2', is_index=False)
+            "02 · 카테고리 파일", "csv 업데이트", ['csv'], f'cf2{sfx}', f'cat_btn2{sfx}', is_index=False)
     with u3:
         index_file2, run_index2 = render_upload_card(
-            "03 · 인덱스 파일", "xlsx 업데이트", ['xlsx', 'xls'], 'ixf2', 'index_btn2', is_index=True)
+            "03 · 인덱스 파일", "xlsx 업데이트", ['xlsx', 'xls'], f'ixf2{sfx}', f'index_btn2{sfx}', is_index=True)
 
     if run_index2:
         if not index_file2:
@@ -1351,8 +1532,9 @@ def render_new_tab():
 
     if st.session_state['index2_campaign_df'] is not None:
         up_at = st.session_state['index2_uploaded_at']
+        shared_note = " · 데이터가공-D7과 공유" if fmt == 'd0' else " · 데이터가공-D0와 공유"
         st.success(f"✅ 현재 적용 중인 인덱스: **{st.session_state['index2_filename']}** "
-                   f"({up_at.strftime('%Y-%m-%d %H:%M')})")
+                   f"({up_at.strftime('%Y-%m-%d %H:%M')}){shared_note}")
         camp_n = len(st.session_state['index2_campaign_df'])
         feed_n = len(st.session_state['index2_feed_df']) \
             if st.session_state['index2_feed_df'] is not None else 0
@@ -1374,13 +1556,13 @@ def render_new_tab():
 
     def _refresh_media2(log, pause=0.15):
         with media_slot2.container():
-            render_run_log("미디어 파일 가공", log, key_prefix="media2")
+            render_run_log("미디어 파일 가공", log, key_prefix=f"media2{sfx}")
         if pause:
             time.sleep(pause)
 
     def _refresh_cat2(log, pause=0.15):
         with cat_slot2.container():
-            render_run_log("카테고리 파일 가공", log, key_prefix="cat2")
+            render_run_log("카테고리 파일 가공", log, key_prefix=f"cat2{sfx}")
         if pause:
             time.sleep(pause)
 
@@ -1388,9 +1570,9 @@ def render_new_tab():
     if run_media2:
         if not media_file2:
             st.warning("미디어 파일을 업로드해주세요.")
-            _refresh_media2(st.session_state['media_log2'] or _new_run_log(MEDIA_STEP_LABELS_V2), pause=0)
+            _refresh_media2(st.session_state[MK] or _new_run_log(MEDIA_STEP_LABELS_V2), pause=0)
         else:
-            st.session_state['media_log2'] = None
+            st.session_state[MK] = None
             log = _new_run_log(MEDIA_STEP_LABELS_V2)
             _refresh_media2(log)
 
@@ -1405,10 +1587,7 @@ def render_new_tab():
                         f"'{media_file2.name}'은(는) 카테고리 파일 컬럼 구조로 보입니다. "
                         "카테고리 파일 업로드란에 올린 뒤 카테고리 가공 버튼을 사용해주세요."
                     )
-                col_note = None
-                if media_raw.shape[1] != len(MEDIA_COLUMNS):
-                    col_note = (f"컬럼 수({media_raw.shape[1]})가 예상({len(MEDIA_COLUMNS)}개)과 "
-                                "다릅니다. 컬럼 구조를 확인해주세요.")
+                col_note = check_af_format(media_raw, fmt, 'media')
                 m_df = process_media(media_raw)
                 if m_df.empty:
                     raise ValueError("A열(날짜)을 인식할 수 있는 행이 없습니다. 날짜 형식을 확인해주세요.")
@@ -1433,7 +1612,7 @@ def render_new_tab():
                     m_df = insert_v2_columns(m_df, biz_list, type_list, feed_list)
                     n_missing = sum(1 for b in biz_list if b == INDEX_MISSING_MARK)
                     log['steps'][1]['status'] = 'done'
-                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing}건" if n_missing else "전체 매칭 완료"
+                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing:,}건" if n_missing else "전체 매칭 완료"
                     log['rows'] = len(m_df)
                 except Exception:
                     log['steps'][1]['status'] = 'error'
@@ -1460,7 +1639,7 @@ def render_new_tab():
                 _refresh_media2(log)
                 log['steps'][3]['status'] = 'done'
                 log['steps'][3]['detail'] = (
-                    f"⚠️ {n_media_missing}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
+                    f"⚠️ {n_media_missing:,}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
                 )
                 _refresh_media2(log)
 
@@ -1476,24 +1655,24 @@ def render_new_tab():
                 _refresh_media2(log)
                 try:
                     log['excel_bytes'] = build_media_excel(m_df)
-                    log['excel_fname'] = f"미디어_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['excel_fname'] = f"미디어_가공_{spec['label']}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
                     log['steps'][5]['status'] = 'done'
                 except Exception:
                     log['steps'][5]['status'] = 'error'
                     log['steps'][5]['detail'] = traceback.format_exc()
                 _refresh_media2(log, pause=0)
 
-            st.session_state['media_log2'] = log
+            st.session_state[MK] = log
     else:
-        _refresh_media2(st.session_state['media_log2'] or _new_run_log(MEDIA_STEP_LABELS_V2), pause=0)
+        _refresh_media2(st.session_state[MK] or _new_run_log(MEDIA_STEP_LABELS_V2), pause=0)
 
     # ────────────────────────────── 카테고리 가공 (신규) ─────────────────────────
     if run_cat2:
         if not cat_file2:
             st.warning("카테고리 파일을 업로드해주세요.")
-            _refresh_cat2(st.session_state['cat_log2'] or _new_run_log(CATEGORY_STEP_LABELS_V2), pause=0)
+            _refresh_cat2(st.session_state[CK] or _new_run_log(CATEGORY_STEP_LABELS_V2), pause=0)
         else:
-            st.session_state['cat_log2'] = None
+            st.session_state[CK] = None
             log = _new_run_log(CATEGORY_STEP_LABELS_V2)
             _refresh_cat2(log)
 
@@ -1508,10 +1687,7 @@ def render_new_tab():
                         f"'{cat_file2.name}'은(는) 미디어 파일 컬럼 구조로 보입니다. "
                         "미디어 파일 업로드란에 올린 뒤 미디어 가공 버튼을 사용해주세요."
                     )
-                col_note = None
-                if cat_raw.shape[1] != len(CATEGORY_COLUMNS):
-                    col_note = (f"컬럼 수({cat_raw.shape[1]})가 예상({len(CATEGORY_COLUMNS)}개)과 "
-                                "다릅니다. 컬럼 구조를 확인해주세요.")
+                col_note = check_af_format(cat_raw, fmt, 'category')
                 df1 = process_category_step1(cat_raw)
                 log['steps'][0]['status'] = 'done'
                 log['steps'][0]['detail'] = col_note
@@ -1534,7 +1710,7 @@ def render_new_tab():
                     )
                     n_missing = sum(1 for b in biz_list if b == INDEX_MISSING_MARK)
                     log['steps'][1]['status'] = 'done'
-                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing}건" if n_missing else "전체 매칭 완료"
+                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing:,}건" if n_missing else "전체 매칭 완료"
                 except Exception:
                     log['steps'][1]['status'] = 'error'
                     log['steps'][1]['detail'] = traceback.format_exc()
@@ -1550,7 +1726,7 @@ def render_new_tab():
                     df2, manual = process_category_step3(df1, biz_array, type_list=type_list)
                     n_manual = int(manual.sum())
                     log['steps'][2]['status'] = 'done'
-                    log['steps'][2]['detail'] = f"수기확인 필요 {n_manual}건" if n_manual else "전체 매핑 완료"
+                    log['steps'][2]['detail'] = f"수기확인 필요 {n_manual:,}건" if n_manual else "전체 매핑 완료"
                 except Exception:
                     log['steps'][2]['status'] = 'error'
                     log['steps'][2]['detail'] = traceback.format_exc()
@@ -1581,7 +1757,7 @@ def render_new_tab():
                 _refresh_cat2(log)
                 log['steps'][4]['status'] = 'done'
                 log['steps'][4]['detail'] = (
-                    f"⚠️ {n_media_missing}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
+                    f"⚠️ {n_media_missing:,}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
                 )
                 _refresh_cat2(log)
 
@@ -1598,18 +1774,18 @@ def render_new_tab():
                 _refresh_cat2(log)
                 try:
                     log['excel_bytes'] = build_category_excel(final_df)
-                    log['excel_fname'] = f"카테고리_가공_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    log['excel_fname'] = f"카테고리_가공_{spec['label']}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
                     log['steps'][6]['status'] = 'done'
                 except Exception:
                     log['steps'][6]['status'] = 'error'
                     log['steps'][6]['detail'] = traceback.format_exc()
                 _refresh_cat2(log, pause=0)
 
-            st.session_state['cat_log2'] = log
+            st.session_state[CK] = log
     else:
-        _refresh_cat2(st.session_state['cat_log2'] or _new_run_log(CATEGORY_STEP_LABELS_V2), pause=0)
+        _refresh_cat2(st.session_state[CK] or _new_run_log(CATEGORY_STEP_LABELS_V2), pause=0)
 
-    render_extract_guide('new')
+    render_extract_guide('new' if fmt == 'd7' else 'new_d0')
 
 
 def render_legacy_tab():
@@ -1734,7 +1910,7 @@ def render_legacy_tab():
                     )
                     n_missing = int((m_df['사업부구분'] == INDEX_MISSING_MARK).sum())
                     log['steps'][1]['status'] = 'done'
-                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing}건" if n_missing else "전체 매칭 완료"
+                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing:,}건" if n_missing else "전체 매칭 완료"
                     log['rows'] = len(m_df)
                 except Exception:
                     log['steps'][1]['status'] = 'error'
@@ -1761,7 +1937,7 @@ def render_legacy_tab():
                 _refresh_media(log)
                 log['steps'][3]['status'] = 'done'
                 log['steps'][3]['detail'] = (
-                    f"⚠️ {n_media_missing}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
+                    f"⚠️ {n_media_missing:,}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
                 )
                 _refresh_media(log)
 
@@ -1833,7 +2009,7 @@ def render_legacy_tab():
                     )
                     n_missing = int((biz_list == INDEX_MISSING_MARK).sum())
                     log['steps'][1]['status'] = 'done'
-                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing}건" if n_missing else "전체 매칭 완료"
+                    log['steps'][1]['detail'] = f"#인덱스추가 {n_missing:,}건" if n_missing else "전체 매칭 완료"
                 except Exception:
                     log['steps'][1]['status'] = 'error'
                     log['steps'][1]['detail'] = traceback.format_exc()
@@ -1848,7 +2024,7 @@ def render_legacy_tab():
                     df2, manual = process_category_step3(df1, biz_list)
                     n_manual = int(manual.sum())
                     log['steps'][2]['status'] = 'done'
-                    log['steps'][2]['detail'] = f"수기확인 필요 {n_manual}건" if n_manual else "전체 매핑 완료"
+                    log['steps'][2]['detail'] = f"수기확인 필요 {n_manual:,}건" if n_manual else "전체 매핑 완료"
                 except Exception:
                     log['steps'][2]['status'] = 'error'
                     log['steps'][2]['detail'] = traceback.format_exc()
@@ -1879,7 +2055,7 @@ def render_legacy_tab():
                 _refresh_cat(log)
                 log['steps'][4]['status'] = 'done'
                 log['steps'][4]['detail'] = (
-                    f"⚠️ {n_media_missing}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
+                    f"⚠️ {n_media_missing:,}건 {MEDIA_GROUP_MISSING_MARK} 발생" if n_media_missing else ""
                 )
                 _refresh_cat(log)
 
@@ -1912,10 +2088,16 @@ def render_legacy_tab():
 
 NAV_PAGES = {
     'new': {
-        'nav_label': '데이터가공',
-        'title':     '데이터가공',
-        'sub':       '캠페인명(F열) 단일 매칭 기준으로 사업부구분·유형구분·피드구분을 분류합니다',
-        'render':    render_new_tab,
+        'nav_label': '데이터가공-D7',
+        'title':     '데이터가공-D7',
+        'sub':       'AppsFlyer D7 기준 파일 · 캠페인명(F열) 단일 매칭으로 사업부구분·유형구분·피드구분을 분류합니다',
+        'render':    lambda: render_new_tab('d7'),
+    },
+    'new_d0': {
+        'nav_label': '데이터가공-D0',
+        'title':     '데이터가공-D0',
+        'sub':       'AppsFlyer D0 기준 파일 · 가공 규칙은 데이터가공-D7과 동일하고, 열 양식만 D0 기준으로 인식합니다',
+        'render':    lambda: render_new_tab('d0'),
     },
     'legacy': {
         'nav_label': 'D7정제',
@@ -1952,7 +2134,7 @@ def render_sidebar_nav():
         st.markdown(
             '<div class="nps-sidebar-foot">'
             '<span class="nps-status-pill"><span class="nps-status-dot"></span>준비됨</span>'
-            '<span>v1.0</span>'
+            '<span>v1.1</span>'
             '</div>',
             unsafe_allow_html=True,
         )

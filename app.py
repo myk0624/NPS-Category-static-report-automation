@@ -1164,7 +1164,7 @@ def inject_theme_css():
         }
         .nps-sidebar-foot {
             margin-top:16px; border-top:1px solid var(--border); padding-top:14px;
-            font-size:11.5px; color:var(--text-muted); font-family:var(--mono);
+            font-size:12px; color:var(--text-muted); font-family:var(--sans);
             display:flex; justify-content:space-between; align-items:center;
         }
         .nps-status-pill { display:inline-flex; align-items:center; gap:5px; }
@@ -1220,7 +1220,7 @@ def inject_theme_css():
         .nps-upload-label { font-size:13.5px; font-weight:700; color:var(--text); margin-bottom:8px; }
 
         /* 진행 현황 패널 — 헤더(제목/진행률/다운로드) */
-        .nps-pipeline-title { font-size:14px; font-weight:700; color:var(--text); margin:0; }
+        .nps-pipeline-title { font-size:15px; font-weight:700; color:var(--text); margin:0; }
         .nps-progress-mini { width:120px !important; max-width:120px !important; height:5px !important; border-radius:3px; background:var(--bg); overflow:hidden; margin-top:6px; display:block; flex:none !important; }
         .nps-progress-mini > div { height:100%; background:var(--primary); transition:width .2s; }
 
@@ -1229,30 +1229,30 @@ def inject_theme_css():
            덮어 잘려 보이던 문제 해결). 좁은 화면에선 가로 스크롤. */
         .nps-track-wrap { overflow-x:auto; margin-top:16px; padding:2px 0 4px; }
         .nps-track {
-            display:grid; grid-template-columns:repeat(var(--n), minmax(92px, 1fr));
-            position:relative; column-gap:8px; min-width:calc(var(--n) * 100px);
+            display:grid; grid-template-columns:repeat(var(--n), minmax(104px, 1fr));
+            position:relative; column-gap:8px; min-width:calc(var(--n) * 112px);
         }
         .nps-track::before {
-            content:""; position:absolute; top:14px; height:1px;
+            content:""; position:absolute; top:15px; height:1px;
             left:calc(100% / var(--n) / 2); right:calc(100% / var(--n) / 2);
             background-image:linear-gradient(to right, var(--border) 50%, transparent 50%);
             background-size:8px 1px; z-index:0;
         }
-        .nps-node { display:flex; flex-direction:column; align-items:center; gap:6px; position:relative; z-index:1; min-width:0; }
+        .nps-node { display:flex; flex-direction:column; align-items:center; gap:8px; position:relative; z-index:1; min-width:0; }
         .nps-node-dot {
-            width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center;
-            font-family:var(--mono); font-size:11px; font-weight:500; border:1.5px solid var(--border);
+            width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+            font-family:var(--mono); font-size:12px; font-weight:500; border:1.5px solid var(--border);
             background:var(--surface); color:var(--text-muted); flex:none;
         }
         .nps-node.done .nps-node-dot { background:var(--primary); border-color:var(--primary); color:#fff; }
         .nps-node.active .nps-node-dot { border-color:var(--primary); color:var(--primary-dark); background:var(--mint); }
         .nps-node.error .nps-node-dot { border-color:#B91C1C; color:#fff; background:#B91C1C; }
         .nps-node-label {
-            font-size:11.5px; font-weight:600; text-align:center; color:var(--text); line-height:1.4;
-            min-height:2.8em; display:flex; align-items:flex-start; justify-content:center;
+            font-size:13px; font-weight:600; text-align:center; color:var(--text); line-height:1.45;
+            min-height:2.9em; letter-spacing:-0.01em; -webkit-font-smoothing:antialiased; display:flex; align-items:flex-start; justify-content:center;
             word-break:keep-all; overflow-wrap:anywhere; padding:0 2px;
         }
-        .nps-node-sub { font-size:10.5px; color:var(--text-muted); text-align:center; font-family:var(--mono); }
+        .nps-node-sub { font-size:12px; font-weight:500; color:var(--text-muted); text-align:center; font-family:var(--sans); }
         .nps-node.done .nps-node-sub { color:var(--primary-dark); }
         .nps-node.error .nps-node-sub { color:#B91C1C; }
 
@@ -1260,15 +1260,15 @@ def inject_theme_css():
         .nps-spec {
             display:flex; flex-wrap:wrap; gap:8px 20px; align-items:center;
             background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
-            padding:12px 16px; margin:0 0 4px; font-size:12.5px; color:var(--text);
+            padding:12px 16px; margin:0 0 4px; font-size:13px; color:var(--text);
         }
         .nps-spec-tag {
-            font-family:var(--mono); font-size:11.5px; font-weight:500; color:var(--primary-dark);
-            background:var(--mint); padding:2px 8px; border-radius:5px;
+            font-family:var(--sans); font-size:12px; font-weight:600; color:var(--primary-dark);
+            background:var(--mint); padding:2px 9px; border-radius:5px;
         }
         .nps-spec-kv { display:inline-flex; gap:6px; align-items:baseline; }
         .nps-spec-k { color:var(--text-muted); white-space:nowrap; }
-        .nps-spec-v { font-family:var(--mono); font-weight:500; }
+        .nps-spec-v { font-family:var(--sans); font-weight:600; font-variant-numeric:tabular-nums; }
 
         /* 추출값 안내 패널 제목 */
         .nps-guide-title { font-size:14px; font-weight:700; color:var(--text); margin:0 0 2px; }
@@ -1333,59 +1333,74 @@ STEP_STATUS_SUB = {
 
 
 def render_upload_card(label, placeholder_text, file_types, uploader_key, button_key, is_index=False):
-    """업로드 카드 하나를 그린다 — 라벨 + st.file_uploader(네이티브 드롭존을 카드 디자인에
-    맞게 스킨) 하나만으로 구성한다.
+    """업로드 카드 하나를 그린다 — 라벨 + 안내 문구 + 파일 영역(st.file_uploader) + 실행 버튼.
 
-    Streamlit 위젯은 임의의 커스텀 버튼이 대신 클릭을 위임할 수 없으므로("우리 버튼이 숨겨진
-    file_uploader를 트리거"하는 방식은 불가능), 실제 업로드 트리거는 네이티브 드롭존의 자체
-    버튼 하나로 통일한다 — 그 위에 우리 커스텀 "Upload" 버튼을 별도로 얹으면 같은 카드 안에
-    업로드 버튼이 2개로 보이는 중복이 생겼던 원인이었다. 네이티브 드롭존의 테두리/배경/안내
-    문구(예: "200MB per file • CSV")는 CSS로 걷어내고 우리 placeholder_text로 교체해
-    카드 전체가 하나의 통합된 컴포넌트로 보이게 한다.
-
-    - 파일 미업로드 상태: 네이티브 드롭존의 "Upload" 버튼(테두리만 있는 무채색 secondary)이
-      유일한 컨트롤
-    - 파일 업로드 후: 네이티브 드롭존이 파일 칩(파일명 + 제거)으로 바뀌고, 그 아래 우리
-      "가공"(미디어/카테고리) 또는 "완료"(인덱스) 브랜드 레드 버튼이 다음 동작으로 추가된다
-      (업로드와는 다른 별개 동작이므로 중복이 아니다)
+    - 업로드 전/후 카드 높이가 바뀌지 않도록 파일 영역 높이를 고정하고, 실행 버튼은 항상
+      카드 맨 아래에 둔다.
+    - 실행 버튼("가공"/"완료")은 업로드 전에도 보이되 회색 비활성 상태, 파일이 올라오면
+      브랜드 레드로 활성화된다.
+    - 네이티브 드롭존의 안내 문구(예: "200MB per file • CSV")는 숨기고, 업로드 전에는
+      Upload 버튼, 업로드 후에는 파일 칩(파일명 + 제거)이 같은 자리에 표시된다.
     Returns (uploaded_file, button_clicked).
     """
     card_key = f"upload_card_{uploader_key}"
+    k = f".st-key-{card_key}"
     st.markdown(f"""
         <style>
-        .st-key-{card_key} {{
+        {k} {{
             border-style: dashed !important; border-color: var(--border) !important;
             border-radius: var(--radius) !important;
             background-color: var(--surface) !important;
+            gap: 10px !important;
         }}
-        .st-key-{card_key} [data-testid="stFileUploaderDropzone"] {{
-            background: transparent !important; border: none !important; padding: 0 !important;
+        {k} [data-testid="stFileUploader"] {{ width: 100%; }}
+        {k} [data-testid="stFileUploader"] > section,
+        {k} [data-testid="stFileUploader"] > div {{ width: 100%; }}
+        {k} [data-testid="stFileUploaderDropzone"] {{
+            background: var(--bg) !important; border: 1px solid var(--border) !important;
+            border-radius: 8px !important; padding: 0 8px 0 14px !important;
+            height: 56px !important; min-height: 56px !important; box-sizing: border-box;
+            display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important;
+            align-items: center !important; justify-content: space-between !important;
+            gap: 10px; margin: 0 !important; cursor: pointer;
         }}
-        .st-key-{card_key} [data-testid="stFileUploaderDropzoneInstructions"] {{ display: none !important; }}
-        .st-key-{card_key} [data-testid="stFileUploaderDropzone"] {{
-            position: relative;
-            display: flex !important;
-            flex-direction: column !important;
-            align-items: stretch !important;
-            gap: 8px;
+        {k} [data-testid="stFileUploaderDropzoneInstructions"] {{ display: none !important; }}
+        /* 업로드 전: 왼쪽 안내 문구 + 오른쪽 Upload 버튼 */
+        {k} [data-testid="stFileUploaderDropzone"]::before {{
+            content: "{escape(placeholder_text)}"; display: block; flex: 1 1 auto; min-width: 0;
+            font-size: 13px; color: var(--text-muted); font-family: var(--sans);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }}
-        .st-key-{card_key} [data-testid="stFileUploaderDropzone"]::before {{
-            content: "{escape(placeholder_text)}"; display: block; order: -1;
-            font-size: 12.5px; color: var(--text-muted); font-family: var(--sans);
+        {k} [data-testid="stFileUploaderDropzone"] > span {{ flex: none; display: inline-flex; }}
+        {k} [data-testid="stFileUploaderDropzone"] > span button {{
+            margin: 0 !important; width: auto !important; min-height: 36px;
         }}
-        .st-key-{card_key} [data-testid="stFileUploaderDropzone"] > button {{
-            width: 100% !important;
+        /* 업로드 후: 안내 문구를 숨기고 같은 자리에 파일 칩(파일명·용량·제거)을 꽉 채워 표시 */
+        {k} [data-testid="stFileUploaderDropzone"]:has([data-testid="stFileChips"]) {{
+            padding: 0 6px 0 8px !important; cursor: default;
         }}
+        {k} [data-testid="stFileUploaderDropzone"]:has([data-testid="stFileChips"])::before {{ display: none; }}
+        {k} [data-testid="stFileUploaderDropzone"] > div {{ flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }}
+        {k} [data-testid="stFileChips"] {{ flex: 1 1 auto; min-width: 0; }}
+        {k} [data-testid="stFileChips"] > div, {k} [data-testid="stFileChips"] > div > div {{ width: 100%; max-width: none; }}
+        {k} [data-testid="stFileChip"] {{
+            width: 100% !important; max-width: none !important; background: transparent !important;
+            border: none !important; padding: 0 !important; box-shadow: none !important;
+            display: flex !important; align-items: center !important;
+        }}
+        {k} [data-testid="stFileChipDeleteBtn"] {{ margin-left: auto; display: flex; align-items: center; }}
+        {k} [data-testid="stFileChipName"] {{ font-size: 13px !important; font-weight: 500; color: var(--text); }}
+        {k} button[data-testid="stBaseButton-borderlessIcon"] {{ display: none !important; }}
+        {k} .stButton, {k} .stButton > button {{ width: 100% !important; }}
         </style>
     """, unsafe_allow_html=True)
     with st.container(key=card_key, border=True):
         st.markdown(f'<div class="nps-upload-label">{escape(label)}</div>', unsafe_allow_html=True)
         uploaded = st.file_uploader(f"{label} 업로드", type=file_types, key=uploader_key,
                                      label_visibility='collapsed')
-        clicked = False
-        if uploaded is not None:
-            btn_label = "완료" if is_index else "가공"
-            clicked = st.button(btn_label, key=button_key, type="primary", use_container_width=True)
+        btn_label = "완료" if is_index else "가공"
+        clicked = st.button(btn_label, key=button_key, type="primary",
+                            use_container_width=True, disabled=uploaded is None)
     return uploaded, clicked
 
 

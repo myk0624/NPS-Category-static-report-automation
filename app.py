@@ -5,6 +5,7 @@ from io import BytesIO
 from html import escape
 import traceback
 import csv
+import re
 import time
 from openpyxl.styles import Font, PatternFill, Border
 
@@ -557,7 +558,18 @@ def process_category_step2(df, group_lookup, creative_lookup):
     return biz_list, group_status, creative_status
 
 
-def process_category_step3(df, biz_list, type_list=None):
+# 그로서리-별도 + 카탈로그 행 중 e-kam 그룹으로 보낼 피드 구분 값. 띄어쓰기·하이픈·대소문자
+# 차이('ekam 브랜드 카탈로그' / 'e-kam 브랜드카탈로그' 등)는 무시하고 비교한다.
+EKAM_FEED_KEY = 'ekam브랜드카탈로그'
+
+
+def _normalize_feed(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ''
+    return re.sub(r'[\s\-_]', '', str(value)).lower()
+
+
+def process_category_step3(df, biz_list, type_list=None, feed_list=None):
     """3단계: 사업부구분(2단계 결과) 기준 카테고리 값 매핑 — 카테고리 구매 unique/quantity/price
     3열의 값만 실제 카테고리 그룹 열(예: '가구 unique/quantity/price')의 값으로 치환하고,
     나머지 45열(패션·뷰티·...·노크잇)은 원본 값 그대로 둔다. 매핑 실패(사업부구분 미매핑,
@@ -565,8 +577,9 @@ def process_category_step3(df, biz_list, type_list=None):
     플래그만 세운다.
 
     type_list([데이터가공] 탭 전용, classify_all_rows_v2의 유형 구분 리스트)가 주어지면,
-    사업부구분='사업부-그로서리-별도' & 해당 행 유형 구분='카탈로그'인 경우 기본 매핑('식품')
-    대신 'e-kam'을 강제 적용한다. type_list=None([D7정제] 탭은 유형 구분 개념이 없어 항상
+    사업부구분='사업부-그로서리-별도' & 해당 행 유형 구분='카탈로그'인 경우 피드 구분
+    (feed_list, BT열)으로 분기한다: 'ekam 브랜드 카탈로그' → 'e-kam', 그 외 피드 → '식품'.
+    type_list=None([D7정제] 탭은 유형 구분 개념이 없어 항상
     None으로 호출됨)이면 이 예외는 적용되지 않고 기존 동작(사업부-그로서리-별도 → 식품)을
     그대로 따른다.
 
@@ -599,7 +612,10 @@ def process_category_step3(df, biz_list, type_list=None):
             continue
         if type_list is not None and biz_str == '사업부-그로서리-별도' \
                 and str(type_list[pos]).strip() == '카탈로그':
-            group_name = 'e-kam'  # [데이터가공] 탭 전용 예외: 그로서리-별도 + 카탈로그 → e-kam
+            # [데이터가공] 탭 전용 예외: 그로서리-별도 + 카탈로그는 피드 구분(BT열)으로 분기
+            #   ekam 브랜드 카탈로그 → e-kam / 그 외 피드 → 식품
+            feed = feed_list[pos] if feed_list is not None else ''
+            group_name = 'e-kam' if _normalize_feed(feed) == EKAM_FEED_KEY else '식품'
         elif biz_str == '사업부-연합':
             usp = str(row_val(row, C_AV, '')).strip().upper()
             if usp == 'ALL':
@@ -1001,7 +1017,7 @@ GUIDE_CONTENT = {
          "- `기본 매핑` : 사업부구분 → 동일 카테고리열 (가구→가구열, 그로서리→식품열 등)\n"
          "- `사업부-연합` : USP Category 값으로 2차 매핑, 미해당 시 `수기확인`\n"
          "- `사업부-연합 + ALL` : USP Category가 `ALL`이면 리빙·키즈·펫·자동차/공구 4개 카테고리 그룹에 동일 값 복사\n"
-         "- `그로서리-별도+카탈로그` : 식품열 대신 `e-kam`열로 치환\n"
+         "- `그로서리-별도+카탈로그` : 피드구분(BT열)이 `ekam 브랜드 카탈로그`면 `e-kam`열, 그 외 피드는 `식품`열로 치환\n"
          "- `여가생활e쿠폰 + 프로모션 넾다세일` : `여가/도서(e쿠폰)` + `패션` 합산값으로 치환"),
         ("공통치환",
          "- `Campaign Theme` : `-` → `BS`\n"
@@ -1743,7 +1759,7 @@ def render_new_tab(fmt='d7'):
                 _refresh_cat2(log)
                 try:
                     biz_array = np.array(biz_list, dtype=object)
-                    df2, manual = process_category_step3(df1, biz_array, type_list=type_list)
+                    df2, manual = process_category_step3(df1, biz_array, type_list=type_list, feed_list=feed_list)
                     n_manual = int(manual.sum())
                     log['steps'][2]['status'] = 'done'
                     log['steps'][2]['detail'] = f"수기확인 필요 {n_manual:,}건" if n_manual else "전체 매핑 완료"

@@ -196,6 +196,17 @@ def read_csv_robust(uploaded_file):
             _log_debug(f"[DEBUG] '{fname}' 인코딩 '{enc}' 실패: {e}")
             continue
 
+    # UTF-8 파일인데 일부 셀만 잘린 경우(멀티바이트 문자 중간 절단 등):
+    # 깨진 바이트가 극소수면 UTF-8로 보고 해당 글자만 대체 문자로 치환해 읽는다.
+    # (charset-normalizer로 넘기면 ptcp154 같은 엉뚱한 인코딩으로 헤더 전체가 깨짐)
+    uploaded_file.seek(0)
+    raw_bytes = uploaded_file.read()
+    n_bad = raw_bytes.decode('utf-8', errors='replace').count('\ufffd')
+    if n_bad <= max(10, len(raw_bytes) // 100_000):
+        _log_debug(f"[DEBUG] '{fname}' UTF-8 깨진 문자 {n_bad}개 → 대체 문자로 치환해 UTF-8로 읽음")
+        st.warning(f"'{fname}'에 깨진 문자 {n_bad}개가 있어 '�'로 치환해 읽었습니다. (원본 셀 값 확인 권장)")
+        return _read_csv_with_encoding(uploaded_file, 'utf-8-sig', errors='replace')
+
     # 자동 감지: charset-normalizer로 실제 인코딩 추정
     detected = None
     try:
